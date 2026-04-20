@@ -1,0 +1,6 @@
+streamlit
+polars
+numpy
+scipy
+huggingface_hub
+boto3

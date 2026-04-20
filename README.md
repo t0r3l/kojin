@@ -1,183 +1,136 @@
-# Nutria - Nutrition Services Deployment
+# Kōjin — コージン
 
-This repository contains AWS deployment scripts for two nutrition-related microservices:
+> *« Donnons à votre corps les repas qu'il mérite. »*
 
-1. **Lambda Service**: Calculates daily macronutrient targets based on user profile
-2. **Fargate API**: Optimizes meal plans using linear programming algorithms
+**Kōjin** est une application web qui compose des **bentos nutritionnellement optimisés** à partir de la base Open Food Facts, en fonction du profil et des objectifs de l'utilisateur.
 
-## Architecture
+Pour chaque journée, l'application :
+1. calcule les **besoins nutritionnels** (kcal, protéines, lipides, glucides, légumes) via la formule Mifflin–St Jeor ajustée par l'activité et l'objectif ;
+2. filtre la base de produits selon le **régime alimentaire** (vegan, végétarien, halal, casher, sans gluten, bio) ;
+3. résout un **système linéaire sous contraintes** (NNLS + BVLS, `scipy`) pour proposer des quantités d'aliments qui collent aux cibles macro par bento ;
+4. applique des règles métier (max 1 protéine animale, max 1 huile, pas de doublons entre bentos) ;
+5. affiche les bentos dans une UI Streamlit épurée inspirée de la typographie japonaise.
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Lambda        │    │   Fargate       │    │   S3 Bucket     │
-│                 │    │                 │    │                 │
-│ Target Calc     │    │ Meal Optimizer  │    │ Nutrition Data  │
-│ (Lightweight)   │    │ (Heavy Compute) │    │ (CSV Files)     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+## Stack
 
-## What This Repo Contains
+- **Streamlit** — UI web.
+- **Polars** — chargement et filtrage rapide du catalogue produits (~dizaines de milliers de lignes).
+- **SciPy** (`nnls`, `lsq_linear` avec méthode BVLS) — solveur d'optimisation linéaire.
+- **Hugging Face Hub** — téléchargement du dataset Open Food Facts (`food.parquet`).
+- **boto3** — téléchargement du CSV préparé depuis S3 en production.
 
-- **`lambda_functions/targets/`**: Lambda function for nutrition target calculations
-- **`fargate/app3.py`**: Fargate service for meal optimization with diet filtering
-- **`deploy-universal.sh`**: Universal deployment script for Fargate services
-- **`README_DEPLOYMENT.md`**: Detailed deployment documentation (French)
+## Démarrage rapide (local)
 
-## Quick Start (From Scratch)
-
-### Prerequisites
-
-1. **AWS CLI** configured with appropriate permissions
-2. **Docker** installed and running
-3. **AWS Account** with ECS, Lambda, S3, and IAM access
-
-### Step 1: Create AWS Infrastructure
-
-Create the required AWS resources manually (one-time setup):
+### 1. Cloner et installer
 
 ```bash
-# 1. Create ECS cluster
-aws ecs create-cluster --cluster-name nutria-dev-cluster --region eu-west-1
+git clone https://github.com/t0r3l/kojin.git
+cd kojin
 
-# 2. Create VPC (optional if using default VPC)
-# Follow VPC creation steps in README_DEPLOYMENT.md if needed
-
-# 3. Create IAM roles for ECS
-# - nutria-dev-ecs-execution-role (for container management)
-# - nutria-dev-ecs-task-role (for S3 access)
-
-# 4. Create S3 bucket for nutrition data
-aws s3 mb s3://nutria-nutrition-data-$(date +%s) --region eu-west-1
-# Upload your nutrition CSV file to the bucket
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Step 2: Deploy Lambda Function
+### 2. Préparer les données
+
+La première exécution nécessite de générer le CSV produits (~95 Mo) depuis le parquet Open Food Facts (~6.7 Go téléchargés, traités en streaming avec Polars) :
 
 ```bash
-# Package and deploy the Lambda function manually via AWS Console
-# or use AWS CLI to create the function from lambda_functions/targets/
+python data_prep_nutriments.py
 ```
 
-### Step 3: Deploy Fargate Service
+Cette commande :
+- télécharge `food.parquet` depuis Hugging Face (`openfoodfacts/product-database`) dans `data/`,
+- filtre les produits France non obsolètes,
+- extrait les 5 macro-nutriments (kcal, protéines, lipides, glucides, fibres),
+- nettoie les catégories et labels (accents, séparateurs),
+- ajoute des **tags booléens** (`vegan`, `halal`, `meat`, `fish`, `lait`, `gluten_free`…),
+- exclut les produits NOVA 4 (ultra-transformés),
+- écrit `data/products_names_with_macro_nutriments.csv`.
 
-Use the universal deployment script to deploy the meal optimizer:
+> Durée : ~5 à 15 minutes selon la connexion et la machine. L'étape se fait en batch par row-groups Parquet pour rester en mémoire raisonnable.
+
+### 3. Lancer l'application
 
 ```bash
-# Make script executable
-chmod +x deploy-universal.sh
-
-# Deploy app3 with optimized Dockerfile
-./deploy-universal.sh Dockerfile.fast-app3 app3-optimizer
+streamlit run streamlit_app.py
 ```
 
-## Deploy Script Overview
+L'app s'ouvre sur [http://localhost:8501](http://localhost:8501).
 
-The `deploy-universal.sh` script automates the Fargate deployment process:
+Si le CSV n'est pas présent localement au lancement, un bouton **« Lancer la préparation des données »** permet de déclencher la prépa directement depuis l'UI.
 
-### What it does:
-1. **Generates unique names** with random suffixes for services/repositories
-2. **Creates ECR repository** for Docker images
-3. **Builds Docker image** using specified Dockerfile
-4. **Pushes image to ECR** with authentication
-5. **Creates ECS task definition** with proper IAM roles and environment variables
-6. **Deploys ECS service** to existing cluster
-7. **Returns public IP** for testing
+## Comment l'utiliser
 
-### Usage:
-```bash
-./deploy-universal.sh <dockerfile-name> [service-prefix]
+Dans la barre latérale :
 
-# Examples:
-./deploy-universal.sh Dockerfile.fast-app3 app3-optimizer
-./deploy-universal.sh Dockerfile.micro test-app
-```
+| Section | Choix |
+|---|---|
+| **Profil** | Genre, âge, poids, taille |
+| **Activité** | Activité quotidienne (sédentaire → actif) + fréquence sportive |
+| **Objectif** | Sèche musculaire / Recomposition / Prise de masse |
+| **Régime** | Aucun, Vegan, Végétarien, Halal, Casher, Sans Gluten, Bio |
+| **Bentos** | 1 à 5 bentos par jour, fraction calorique par bento (sliders couplés), bento qui reçoit la protéine animale |
 
-### Script Parameters:
-- **Dockerfile**: Path to Dockerfile in fargate/ directory
-- **Service Prefix**: Base name for service (gets random suffix)
+L'encadré en haut affiche les **objectifs journaliers calculés** (kcal, macros, portion légumes). Cliquer sur **« Composer les bentos »** déclenche l'optimisation : chaque bento s'affiche avec sa liste d'aliments, les quantités en grammes, et la contribution macro par aliment.
 
-### What it creates:
-- ECR Repository: `nutria/<service-prefix>-<random>`
-- ECS Service: `<service-prefix>-<random>`
-- Task Definition: Configured with S3 access and environment variables
+## Calcul des objectifs nutritionnels
 
-## Configuration
-
-### Environment Variables (automatically set by deploy script):
-- `S3_BUCKET_NAME`: Your nutrition data bucket
-- `CSV_FILE_KEY`: Path to nutrition CSV file in S3
-- `ENVIRONMENT`: Set to "production" for AWS mode
-- `PORT`: Service port (8080)
-
-### S3 Bucket Structure:
-```
-your-bucket-name/
-└── data/
-    └── products_nutrition.csv
-```
-
-## Testing Deployed Services
-
-### Test Fargate Service:
-```bash
-# Health check
-curl http://<public-ip>:8080/health
-
-# Meal optimization with diet filtering
-curl -X POST http://<public-ip>:8080/optimize \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user": {"target_array": [2000, 75, 50, 250]},
-    "meal_fraction": 0.3,
-    "solveur": "hybride",
-    "regime": "Vegan"
-  }'
-```
-
-### Test Lambda Function:
-```bash
-# Via AWS CLI
-aws lambda invoke --function-name your-lambda-name \
-  --payload '{"gender":"male","age":30,"height":180,"weight_in_kg":75,"activity_level":"moderate","objectif":"maintain"}' \
-  response.json
-```
-
-## Diet Filtering Support
-
-The Fargate service supports filtering by dietary preferences:
-- `Vegan`: Plant-based only
-- `Vegetarian`: No meat
-- `Halal`: Halal-certified foods
-- `Casher`: Kosher foods
-- `Sans Gluten`: Gluten-free
-- `Bio`: Organic foods
-
-## Local Development
-
-Both services support local development mode:
-- Set `ENVIRONMENT=local` to use local CSV files instead of S3
-- Lambda function works independently of S3
-- Fargate service reads from local file system when in local mode
-
-## File Structure
+Formule **Mifflin–St Jeor** pour le métabolisme de base (BMR), ajustée en deux temps :
 
 ```
-NutriaIngestionAndSolver/
-├── README.md                          # This file
-├── README_DEPLOYMENT.md               # Detailed deployment guide (French)
-├── deploy-universal.sh                # Universal deployment script
-├── lambda_functions/
-│   └── targets/
-│       ├── lambda_function.py         # Target calculation logic
-│       └── requirements.txt
-├── fargate/
-│   ├── app3.py                        # Meal optimizer service
-│   ├── Dockerfile.fast-app3           # Optimized production Dockerfile
-│   ├── requirements.txt
-│   └── test3.sh                       # Testing script
-└── .gitignore
+BMR       = 10·poids + 6.25·taille − 5·âge + (5 si homme, −161 si femme)
+multiplier = activité_quotidienne + fréquence_sport   (plafonné à 1.95)
+TDEE      = BMR × multiplier
+
+energy    = TDEE × cal_factor        # 0.90 lean / 1.00 balanced / 1.15 bulk
+proteins  = prot_per_kg × poids      # 2.2 lean / 1.8 balanced / 1.6 bulk
+fat       = energy × fat_pct / 9     # Atwater
+carbs     = (energy − 4·proteins − 9·fat) / 4   (plancher 50 g)
 ```
 
-## Need Help?
+Les 5 valeurs (`energy, proteins, fat, carbs, portion_légumes`) deviennent les cibles globales passées au solveur, réparties par bento selon les fractions configurées.
 
-For detailed step-by-step instructions, see `README_DEPLOYMENT.md` (in French) which contains comprehensive deployment procedures and troubleshooting information.
+## Algorithme de composition
+
+Pour chaque bento, on construit :
+- un **vecteur cible** `[kcal·frac, protéines/bento, lip·frac, gluc·frac, fibres·frac, (légumes·frac)]`,
+- une **matrice `M`** des nutriments pour 100 g des produits filtrés,
+- des **bornes par produit** (`portion_maximale`, défaut 200 g).
+
+Solveur **hybride** :
+1. **NNLS** (`scipy.optimize.nnls`) pour présélectionner les produits pertinents.
+2. **BVLS** (`lsq_linear` avec `method="bvls"`) sur le sous-ensemble, avec contraintes `0 ≤ x ≤ portion_max`.
+
+Post-traitement métier :
+- séparation animal / huile / autres,
+- au plus **1 protéine animale** (et seulement sur le bento désigné),
+- au plus **1 huile**,
+- pas de doublons d'aliments d'un bento à l'autre (via `code` produit).
+
+## Structure du projet
+
+```
+kojin/
+├── README.md                          # Ce fichier
+├── DEPLOYMENT.md                      # Déploiement AWS (ECS Fargate + S3 + ALB)
+├── requirements.txt                   # Dépendances Python
+├── streamlit_app.py                   # UI + solveur + logique métier
+├── data_prep_nutriments.py            # Pipeline Open Food Facts → CSV
+├── .gitignore
+└── data/                              # Non versionné
+    ├── food.parquet                   # Téléchargé depuis Hugging Face
+    └── products_names_with_macro_nutriments.csv   # Produit par data_prep
+```
+
+## Déploiement
+
+Le déploiement sur AWS (ECS Fargate + ALB + S3 pour le CSV) est documenté en détail dans **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+
+En production, l'application lit le CSV depuis un bucket S3 au démarrage via la variable d'environnement `DATA_S3_URI` (ex : `s3://kojin-data-123456789012/products_names_with_macro_nutriments.csv`).
+
+## Crédits & licence
+
+- Données : [Open Food Facts](https://world.openfoodfacts.org/), distribuées sous licence [ODbL](https://opendatacommons.org/licenses/odbl/1-0/).
+- Typographie : Noto Serif JP, Inter (Google Fonts).
