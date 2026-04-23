@@ -4,3 +4,4 @@ numpy
 scipy
 huggingface_hub
 boto3
+requests

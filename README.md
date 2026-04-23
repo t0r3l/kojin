@@ -17,7 +17,7 @@ Pour chaque journée, l'application :
 - **Polars** — chargement et filtrage rapide du catalogue produits (~dizaines de milliers de lignes).
 - **SciPy** (`nnls`, `lsq_linear` avec méthode BVLS) — solveur d'optimisation linéaire.
 - **Hugging Face Hub** — téléchargement du dataset Open Food Facts (`food.parquet`).
-- **boto3** — téléchargement du CSV préparé depuis S3 en production.
+- **boto3** — téléchargement du CSV préparé depuis S3 en production, et appel d'**Amazon Bedrock** (Nova Micro) pour la génération des consignes de préparation.
 
 ## Démarrage rapide (local)
 
@@ -108,6 +108,42 @@ Post-traitement métier :
 - au plus **1 protéine animale** (et seulement sur le bento désigné),
 - au plus **1 huile**,
 - pas de doublons d'aliments d'un bento à l'autre (via `code` produit).
+
+## Consignes de préparation (LLM)
+
+Chaque bento généré affiche un bouton **« Consignes de préparation »** qui appelle un LLM pour proposer une recette (cuissons, assaisonnements, ordre de montage) à partir des ingrédients pesés du bento.
+
+**Backend par défaut : [Amazon Bedrock](https://aws.amazon.com/bedrock/) avec `amazon.nova-micro-v1:0`** — le modèle le moins cher du catalogue Bedrock ($0,000035 / 1K tokens entrée, $0,00014 / 1K tokens sortie au moment de la rédaction), largement suffisant pour 4–6 étapes de préparation.
+
+Intégration native AWS :
+- pas de clé d'API à gérer — l'auth passe par le **rôle IAM de la tâche ECS** (`bedrock:InvokeModel`) ;
+- pas de sortie de trafic hors AWS ;
+- facturation unifiée via Cost Explorer, logs via CloudTrail.
+
+### Activer Bedrock
+
+1. Dans la console AWS **Bedrock → Model access** de la région choisie (ex. `eu-west-1` ou `eu-west-3`), activer l'accès à `amazon.nova-micro-v1:0`.
+2. Ajouter au rôle de tâche ECS (voir `DEPLOYMENT.md`, §6.3) l'autorisation d'invoquer le modèle :
+
+   ```json
+   {
+     "Effect": "Allow",
+     "Action": ["bedrock:InvokeModel"],
+     "Resource": "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
+   }
+   ```
+
+Variables d'environnement disponibles :
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `LLM_BACKEND` | `auto` | `bedrock`, `pollinations`, ou `auto` (Bedrock puis repli Pollinations) |
+| `BEDROCK_MODEL_ID` | `amazon.nova-micro-v1:0` | ID du modèle Bedrock |
+| `AWS_REGION` | `eu-west-1` | Région Bedrock |
+
+### Développement local
+
+Sans credentials AWS, le backend `auto` retombe automatiquement sur [Pollinations.ai](https://pollinations.ai), un service gratuit sans clé, ce qui permet de tester la fonctionnalité en local sans configurer Bedrock. Pour forcer ce mode : `export LLM_BACKEND=pollinations`.
 
 ## Structure du projet
 

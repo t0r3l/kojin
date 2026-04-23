@@ -145,6 +145,27 @@ button[kind="primary"]:hover {
     background-color: #333 !important;
 }
 
+button[kind="secondary"] {
+    background-color: var(--ink) !important;
+    color: var(--paper) !important;
+    border: none !important;
+    border-radius: 0 !important;
+    font-family: 'Noto Serif JP', serif !important;
+    font-weight: 400 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    font-size: 0.78rem !important;
+    padding: 0.5rem 1.4rem !important;
+}
+button[kind="secondary"] p,
+button[kind="secondary"] div {
+    color: var(--paper) !important;
+}
+button[kind="secondary"]:hover {
+    background-color: #333 !important;
+    color: var(--paper) !important;
+}
+
 .stDivider { border-color: var(--line) !important; }
 
 [data-testid="stMetricValue"] {
@@ -537,6 +558,74 @@ def optimize_bento(
     return pl.DataFrame(rows).sort("Quantité (g)", descending=True)
 
 
+# ─── LLM preparation instructions ────────────────────────────────────────────
+
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
+
+
+def _build_prep_prompt(bento_name: str, ingredients: list[dict]) -> str:
+    lines = [f"- {ing['Aliment']} : {ing['Quantité (g)']} g" for ing in ingredients]
+    ingr_block = "\n".join(lines)
+    return (
+        "Tu es un chef cuisinier japonais, précis et concis.\n"
+        f"Voici les ingrédients disponibles pour un bento nommé « {bento_name} » "
+        "(quantités en grammes, déjà pesées) :\n\n"
+        f"{ingr_block}\n\n"
+        "Donne en français des consignes de préparation claires en 4 à 6 étapes courtes. "
+        "Propose une idée de plat cohérent qui utilise tous les ingrédients, "
+        "indique les cuissons, assaisonnements simples et l'ordre de montage dans le bento. "
+        "Format : liste numérotée, pas d'introduction, pas de conclusion."
+    )
+
+
+def _call_bedrock(prompt: str) -> str:
+    import boto3
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "eu-west-1"
+    client = boto3.client("bedrock-runtime", region_name=region)
+    resp = client.converse(
+        modelId=BEDROCK_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"temperature": 0.5, "maxTokens": 600},
+    )
+    return resp["output"]["message"]["content"][0]["text"].strip()
+
+
+def _call_pollinations(prompt: str) -> str:
+    import requests
+    r = requests.post(
+        "https://text.pollinations.ai/openai",
+        json={
+            "model": "openai",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.5,
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+
+def get_preparation_instructions(bento_name: str, ingredients: list[dict]) -> str:
+    """Generate preparation instructions using Amazon Bedrock (Nova Micro).
+
+    Falls back to Pollinations.ai if Bedrock is unavailable (local dev without
+    AWS credentials). Control via ``LLM_BACKEND`` env var: ``bedrock`` (default),
+    ``pollinations``, or ``auto`` (Bedrock then Pollinations).
+    """
+    prompt = _build_prep_prompt(bento_name, ingredients)
+    backend = os.environ.get("LLM_BACKEND", "auto").lower()
+
+    if backend == "pollinations":
+        return _call_pollinations(prompt)
+    if backend == "bedrock":
+        return _call_bedrock(prompt)
+
+    try:
+        return _call_bedrock(prompt)
+    except Exception:
+        return _call_pollinations(prompt)
+
+
 # ─── Data preparation ────────────────────────────────────────────────────────
 
 def run_data_prep():
@@ -704,8 +793,10 @@ if st.button("Composer les bentos", type="primary", use_container_width=True):
 
     if len(base_products) == 0:
         st.error("Aucun produit ne correspond au régime sélectionné.")
+        st.session_state.pop("bentos", None)
     else:
         used_codes: set[str] = set()
+        bentos_state: list[dict] = []
 
         for idx in range(num_bentos):
             frac = fractions[idx]
@@ -722,6 +813,7 @@ if st.button("Composer les bentos", type="primary", use_container_width=True):
 
             bento_targets = [energy, protein_per_bento, fat, carbs]
 
+            error_msg: str | None = None
             try:
                 bento = optimize_bento(
                     bento_products, bento_targets, frac,
@@ -729,8 +821,7 @@ if st.button("Composer les bentos", type="primary", use_container_width=True):
                     allow_one_animal=is_protein_bento,
                 )
             except Exception as exc:
-                st.error(f"Erreur bento {name} : {exc}")
-                st.code(traceback.format_exc())
+                error_msg = f"Erreur bento {name} : {exc}\n{traceback.format_exc()}"
                 bento = None
 
             if bento is not None and len(bento) > 0:
@@ -738,20 +829,53 @@ if st.button("Composer les bentos", type="primary", use_container_width=True):
                 matched = bento_products.filter(pl.col("product_name").is_in(selected_names))
                 used_codes.update(matched["code"].to_list())
 
-            prot_label = f" — {protein_per_bento}g prot"
-            animal_label = " ◆ animal" if is_protein_bento else ""
-            st.markdown(
-                f'<div class="bento-header">弁当 {name} '
-                f'<span style="font-size:0.8rem;color:#888">'
-                f'{frac:.0%}{prot_label}{animal_label}</span></div>',
-                unsafe_allow_html=True,
-            )
+            bentos_state.append({
+                "name": name,
+                "fraction": frac,
+                "is_protein": is_protein_bento,
+                "protein_per_bento": protein_per_bento,
+                "rows": bento.to_dicts() if bento is not None and len(bento) > 0 else [],
+                "error": error_msg,
+            })
 
-            if bento is not None and len(bento) > 0:
-                st.dataframe(
-                    bento.to_pandas(),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info("Aucun aliment trouvé pour ce bento.")
+        st.session_state.bentos = bentos_state
+        st.session_state.pop("prep_instructions", None)
+
+
+if "bentos" in st.session_state:
+    if "prep_instructions" not in st.session_state:
+        st.session_state.prep_instructions = {}
+
+    for idx, bento in enumerate(st.session_state.bentos):
+        prot_label = f" — {bento['protein_per_bento']}g prot"
+        animal_label = " ◆ animal" if bento["is_protein"] else ""
+        st.markdown(
+            f'<div class="bento-header">弁当 {bento["name"]} '
+            f'<span style="font-size:0.8rem;color:#888">'
+            f'{bento["fraction"]:.0%}{prot_label}{animal_label}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        if bento["error"]:
+            st.error(bento["error"].splitlines()[0])
+            with st.expander("Détails"):
+                st.code(bento["error"])
+            continue
+
+        if not bento["rows"]:
+            st.info("Aucun aliment trouvé pour ce bento.")
+            continue
+
+        st.dataframe(bento["rows"], use_container_width=True, hide_index=True)
+
+        btn_key = f"prep_btn_{idx}"
+        if st.button("Consignes de préparation", key=btn_key):
+            try:
+                with st.spinner("Génération des consignes…"):
+                    instructions = get_preparation_instructions(bento["name"], bento["rows"])
+                st.session_state.prep_instructions[idx] = instructions
+            except Exception as exc:
+                st.session_state.prep_instructions[idx] = f"_Erreur LLM : {exc}_"
+
+        if idx in st.session_state.prep_instructions:
+            st.markdown(st.session_state.prep_instructions[idx])

@@ -5,7 +5,8 @@ Guide de déploiement de l'application Streamlit **Kōjin — コージン** sur
 L'application est une UI web mono-conteneur qui :
 - sert le front Streamlit (`streamlit_app.py`),
 - embarque l'optimiseur de bentos (NNLS + BVLS, `scipy`),
-- **télécharge le CSV de produits depuis un bucket S3 au démarrage** (variable d'environnement `DATA_S3_URI`).
+- **télécharge le CSV de produits depuis un bucket S3 au démarrage** (variable d'environnement `DATA_S3_URI`),
+- appelle **Amazon Bedrock (Nova Micro)** pour générer les consignes de préparation des bentos — backend LLM le moins cher du catalogue.
 
 ## 1. Architecture cible
 
@@ -23,12 +24,12 @@ Utilisateur  ── HTTPS ─▶│  Application Load Balancer │──┐
                     │  │  • CSV téléchargé depuis S3 au boot │  │
                     │  └─────────────────────────────────────┘  │
                     └───────────────────────────────────────────┘
-                                      │ s3:GetObject (rôle tâche)
-                                      ▼
-                            ┌───────────────────┐
-                            │      S3 Bucket    │
-                            │  products_*.csv   │
-                            └───────────────────┘
+                         │ s3:GetObject            │ bedrock:InvokeModel
+                         ▼                         ▼
+                 ┌───────────────┐       ┌──────────────────────┐
+                 │   S3 Bucket   │       │  Amazon Bedrock       │
+                 │ products_*.csv│       │  Nova Micro (LLM)     │
+                 └───────────────┘       └──────────────────────┘
 
 Logs : CloudWatch Logs    |   Images : ECR    |   IAM : rôle exécution + rôle tâche
 ```
@@ -211,7 +212,11 @@ aws iam attach-role-policy \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 ```
 
-### 6.3 Rôle de tâche (lecture S3 depuis le conteneur applicatif)
+### 6.3 Rôle de tâche (lecture S3 + invocation Bedrock depuis le conteneur)
+
+Le conteneur a besoin de deux permissions :
+- lire le CSV produits depuis S3 (`DATA_S3_URI`) ;
+- invoquer **Amazon Bedrock Nova Micro** pour générer les consignes de préparation des bentos (voir section « Consignes de préparation » du README).
 
 ```bash
 aws iam create-role \
@@ -236,7 +241,25 @@ aws iam put-role-policy \
   --role-name ${APP_NAME}-ecs-task-role \
   --policy-name ${APP_NAME}-s3-read \
   --policy-document file://s3-read-policy.json
+
+cat > bedrock-invoke-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
+  }]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name ${APP_NAME}-ecs-task-role \
+  --policy-name ${APP_NAME}-bedrock-invoke \
+  --policy-document file://bedrock-invoke-policy.json
 ```
+
+> **Note :** dans la console AWS **Bedrock → Model access** de la région `${AWS_REGION}`, activez d'abord l'accès au modèle `amazon.nova-micro-v1:0` (étape manuelle et unique).
 
 ## 7. Cluster ECS, Task Definition, Service
 
@@ -273,7 +296,9 @@ aws logs create-log-group \
       "environment": [
         { "name": "STREAMLIT_SERVER_HEADLESS", "value": "true" },
         { "name": "AWS_REGION", "value": "REGION" },
-        { "name": "DATA_S3_URI", "value": "s3://DATA_BUCKET/DATA_KEY" }
+        { "name": "DATA_S3_URI", "value": "s3://DATA_BUCKET/DATA_KEY" },
+        { "name": "LLM_BACKEND", "value": "bedrock" },
+        { "name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0" }
       ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -fsS http://localhost:8501/_stcore/health || exit 1"],
