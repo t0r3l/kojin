@@ -2,11 +2,12 @@
 
 Guide de déploiement de l'application Streamlit **Kōjin — コージン** sur AWS.
 
-L'application est une UI web mono-conteneur qui :
-- sert le front Streamlit (`streamlit_app.py`),
-- embarque l'optimiseur de bentos (NNLS + BVLS, `scipy`),
-- **télécharge le CSV de produits depuis un bucket S3 au démarrage** (variable d'environnement `DATA_S3_URI`),
-- appelle **Amazon Bedrock (Nova Micro)** pour générer les consignes de préparation des bentos — backend LLM le moins cher du catalogue.
+L'application est une UI web mono-conteneur Streamlit (multi-pages) qui :
+- sert deux pages — **Bento Maker** (page d'accueil) et **Exploration des ingrédients** ;
+- embarque l'optimiseur de bentos (NNLS + BVLS, `scipy`) ;
+- **télécharge le CSV de produits depuis un bucket S3 au démarrage** (variable d'environnement `DATA_S3_URI`) ;
+- matérialise une base **DuckDB** locale en lecture seule pour la page Exploration ;
+- appelle **Amazon Bedrock (Nova Micro)** via **LangChain** pour traduire les questions de l'utilisateur en SQL DuckDB — backend LLM le moins cher du catalogue.
 
 ## 1. Architecture cible
 
@@ -16,19 +17,22 @@ Utilisateur  ── HTTPS ─▶│  Application Load Balancer │──┐
                        └───────────────────────────┘  │
                                                       │  HTTP/WebSocket :8501
                                                       ▼
-                    ┌───────────────────────────────────────────┐
-                    │              ECS Fargate                  │
-                    │  ┌─────────────────────────────────────┐  │
-                    │  │ Container Streamlit (Kōjin)         │  │
-                    │  │  • streamlit_app.py                 │  │
-                    │  │  • CSV téléchargé depuis S3 au boot │  │
-                    │  └─────────────────────────────────────┘  │
-                    └───────────────────────────────────────────┘
+                    ┌────────────────────────────────────────────┐
+                    │              ECS Fargate                   │
+                    │  ┌──────────────────────────────────────┐  │
+                    │  │ Container Streamlit (Kōjin)          │  │
+                    │  │  • streamlit_app.py (st.navigation)  │  │
+                    │  │  • app_pages/bento_maker.py          │  │
+                    │  │  • app_pages/exploration.py          │  │
+                    │  │      (LangChain → Bedrock / DuckDB)  │  │
+                    │  │  • CSV téléchargé depuis S3 au boot  │  │
+                    │  └──────────────────────────────────────┘  │
+                    └────────────────────────────────────────────┘
                          │ s3:GetObject            │ bedrock:InvokeModel
                          ▼                         ▼
                  ┌───────────────┐       ┌──────────────────────┐
-                 │   S3 Bucket   │       │  Amazon Bedrock       │
-                 │ products_*.csv│       │  Nova Micro (LLM)     │
+                 │   S3 Bucket   │       │  Amazon Bedrock      │
+                 │ products_*.csv│       │  Nova Micro (LLM)    │
                  └───────────────┘       └──────────────────────┘
 
 Logs : CloudWatch Logs    |   Images : ECR    |   IAM : rôle exécution + rôle tâche
@@ -216,7 +220,7 @@ aws iam attach-role-policy \
 
 Le conteneur a besoin de deux permissions :
 - lire le CSV produits depuis S3 (`DATA_S3_URI`) ;
-- invoquer **Amazon Bedrock Nova Micro** pour générer les consignes de préparation des bentos (voir section « Consignes de préparation » du README).
+- invoquer **Amazon Bedrock Nova Micro** pour la page « Exploration des ingrédients » qui traduit les questions en langage naturel en SQL DuckDB via LangChain (voir section « Exploration en langage naturel » du README).
 
 ```bash
 aws iam create-role \
@@ -297,7 +301,6 @@ aws logs create-log-group \
         { "name": "STREAMLIT_SERVER_HEADLESS", "value": "true" },
         { "name": "AWS_REGION", "value": "REGION" },
         { "name": "DATA_S3_URI", "value": "s3://DATA_BUCKET/DATA_KEY" },
-        { "name": "LLM_BACKEND", "value": "bedrock" },
         { "name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0" }
       ],
       "healthCheck": {

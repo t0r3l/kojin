@@ -65,3 +65,4 @@ data_prep/data/*.csv
 task-def.json
 trust-ecs-tasks.json
 s3-read-policy.json
+bedrock-invoke-policy.json
