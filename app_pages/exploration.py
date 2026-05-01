@@ -250,6 +250,8 @@ if st.button("Interroger la base", type="primary"):
         with st.spinner("Exécution de la requête…"):
             df_b, err_b, duck_ms = _execute_sql(sql_b)
         _render_result(df_b, err_b, duck_ms)
+        with st.expander("Requête SQL générée", expanded=False):
+            st.code(sql_b, language="sql")
 
         append_exploration_metrics_event({
             "mode": "single",
@@ -286,6 +288,8 @@ if st.button("Interroger la base", type="primary"):
             with st.spinner("Exécution…"):
                 df_b, err_b, duck_b = _execute_sql(sql_b)
             _render_result(df_b, err_b, duck_b)
+            with st.expander("Requête SQL générée", expanded=False):
+                st.code(sql_b, language="sql")
 
     sql_c = None
     ms_c = None
@@ -315,6 +319,8 @@ if st.button("Interroger la base", type="primary"):
                 with st.spinner("Exécution…"):
                     df_c, err_c, duck_c = _execute_sql(sql_c)
                 _render_result(df_c, err_c, duck_c)
+                with st.expander("Requête SQL générée", expanded=False):
+                    st.code(sql_c, language="sql")
 
     sql_identical = (
         sql_b is not None and sql_c is not None and sql_c.strip() == sql_b.strip()
