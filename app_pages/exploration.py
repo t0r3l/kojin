@@ -1,28 +1,33 @@
-"""Exploration des ingrédients — natural-language queries on the products
-catalogue, powered by LangChain + Amazon Bedrock (Nova Micro) + DuckDB.
+"""Exploration — langage naturel → SQL DuckDB.
 
-The user types a free-form question in French (or any language), an LLM
-chain translates it into a DuckDB SQL query against the ``products`` table,
-the query is executed in **read-only** mode, and the result is rendered as
-a Streamlit table.
+Référence : **Bedrock** ou **Groq** (``LLM_PROVIDER`` / ``GROQ_API_KEY`` / ``auto``).
+Comparaison : ``BEDROCK_COMPARE_MODEL_ID`` ou ``OPENAI_COMPAT_*``. Voir DEPLOYMENT.md §6C.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import time
 
 import duckdb
 import streamlit as st
 
 from kojin_common import (
-    BEDROCK_MODEL_ID,
     CSV_PATH,
     DUCKDB_PATH,
     DUCKDB_TABLE,
+    append_exploration_metrics_event,
     apply_theme,
+    compare_agent_mode,
+    compare_sql_llm_label,
     ensure_csv_from_s3,
+    format_exploration_results_for_display,
     get_chat_llm,
+    get_compare_sql_chat_llm,
+    reference_llm_provider,
+    reference_model_id_for_metrics,
 )
 
 apply_theme()
@@ -30,7 +35,7 @@ ensure_csv_from_s3()
 
 st.title("Exploration des ingrédients")
 st.markdown(
-    '<p class="subtitle">interrogez la base en langage naturel</p>',
+    '<p class="subtitle" style="font-style:italic;color:#AD9E7B">Interrogez la base en langage naturel</p>',
     unsafe_allow_html=True,
 )
 
@@ -96,17 +101,18 @@ explicitement un agrégat ou un autre nombre.
 kascher, meat, fish, lait, no_palm_oil) compare avec `TRUE` ou `FALSE`.
 - Pour des recherches sur des chaînes (product_name, categories) utilise \
 `ILIKE '%motif%'`.
+- La colonne des calories s'appelle `"energy-kcal"` (avec guillemets doubles \
+obligatoires car le tiret est un opérateur en SQL) : écris toujours \
+`"energy-kcal"` et jamais `energy-kcal` ni `energy_kcal`.
 - Si la question est ambiguë, choisis l'interprétation la plus utile pour un \
 nutritionniste.
 """
 
 
-@st.cache_resource(show_spinner=False)
-def _get_chain():
+def _chain_from_llm(llm):
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
-    llm = get_chat_llm(temperature=0.0, max_tokens=600)
     prompt = ChatPromptTemplate.from_messages(
         [("system", _SYSTEM_PROMPT), ("human", "{question}")]
     )
@@ -117,24 +123,63 @@ _CODE_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)\s*```", re.DOTALL | re.IGNOREC
 
 
 def _clean_sql(raw: str) -> str:
-    """Strip markdown fences and stray prose around the SQL."""
+    """Strip markdown fences and stray prose around the SQL.
+
+    Also fixes unquoted ``energy-kcal`` which DuckDB parses as subtraction.
+    """
     raw = raw.strip()
     m = _CODE_FENCE_RE.search(raw)
     if m:
         raw = m.group(1)
     raw = raw.strip().rstrip(";").strip()
+    # Safety net: quote any bare energy-kcal not already surrounded by double quotes
+    raw = re.sub(r'(?<!")\benergy-kcal\b(?!")', '"energy-kcal"', raw)
     return raw
+
+
+def _invoke_nl_to_sql(chain, question: str, schema: str) -> str:
+    raw = chain.invoke({
+        "table": DUCKDB_TABLE,
+        "schema": schema,
+        "question": question,
+    })
+    return _clean_sql(raw)
+
+
+def _execute_sql(sql: str):
+    """Returns ``(polars DataFrame | None, error | None, exec_ms)``."""
+    t0 = time.perf_counter()
+    con = _open_readonly()
+    try:
+        df = con.execute(sql).pl()
+        return df, None, (time.perf_counter() - t0) * 1000
+    except Exception as e:
+        return None, e, (time.perf_counter() - t0) * 1000
+    finally:
+        con.close()
+
+
+def _render_result(df, err, duck_ms: float | None = None):
+    if err is not None:
+        st.error(f"SQL invalide ou refusé par DuckDB — {err}")
+        return
+    if len(df) == 0:
+        st.info("Aucun résultat.")
+        return
+    df_disp = format_exploration_results_for_display(df)
+    if df_disp is not None:
+        st.dataframe(df_disp.to_pandas(), use_container_width=True, hide_index=True)
+
+
+def _question_fingerprint(q: str) -> str:
+    return hashlib.sha256(q.strip().encode("utf-8")).hexdigest()[:16]
 
 
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
-st.markdown(
-    f"Cette page utilise **Amazon Bedrock** (`{BEDROCK_MODEL_ID}`) via **LangChain** "
-    "pour convertir votre question en SQL DuckDB, exécuté en lecture seule sur la "
-    "base de produits. Des **credentials AWS valides** et l'accès au modèle dans la "
-    "console Bedrock sont requis (en local : `aws configure` ou `aws sso login`). "
-    "Quelques exemples :"
-)
+_compare_model = compare_sql_llm_label()
+_cmp_mode = compare_agent_mode()
+_rlp = reference_llm_provider()
 
 example_queries = [
     "Quels produits vegan ont plus de 25 g de protéines pour 100 g ?",
@@ -149,6 +194,16 @@ with st.expander("Exemples de questions"):
 default_question = st.session_state.get(
     "exploration_question", example_queries[0]
 )
+st.markdown(
+    """<style>
+    [data-testid="stTextArea"] textarea {
+        background-color: #1a1a1a !important;
+        color: #ffffff !important;
+        border: 1px solid #444 !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
 question = st.text_area(
     "Votre question",
     value=default_question,
@@ -156,48 +211,128 @@ question = st.text_area(
     height=80,
 )
 
+do_compare = False
+if _compare_model:
+    do_compare = st.checkbox(
+        "Comparer les deux agents (référence vs second modèle)",
+        value=False,
+        key="exploration_compare_agents",
+    )
+
 if st.button("Interroger la base", type="primary"):
     if not question.strip():
         st.warning("Posez une question avant de lancer.")
         st.stop()
 
-    chain = _get_chain()
     schema = _table_schema()
+    qfp = _question_fingerprint(question)
+    ref_chain = _chain_from_llm(get_chat_llm(temperature=0.0, max_tokens=600))
+    _mid = reference_model_id_for_metrics()
 
-    try:
-        with st.spinner("Génération de la requête SQL…"):
-            raw_sql = chain.invoke({
-                "table": DUCKDB_TABLE,
-                "schema": schema,
-                "question": question,
-            })
-        sql = _clean_sql(raw_sql)
-    except Exception as exc:
-        st.error(
-            "Erreur lors de l'appel à **Amazon Bedrock**. Vérifiez : credentials "
-            "AWS valides (`aws sts get-caller-identity`), région `AWS_REGION` "
-            "alignée avec celle de la console Bedrock, accès activé au modèle "
-            f"`{BEDROCK_MODEL_ID}`, et permission IAM `bedrock:InvokeModel`."
-        )
-        st.exception(exc)
-        st.stop()
+    if not do_compare:
+        try:
+            t0 = time.perf_counter()
+            with st.spinner("Génération de la requête…"):
+                sql_b = _invoke_nl_to_sql(ref_chain, question, schema)
+            gen_ms = (time.perf_counter() - t0) * 1000
+        except Exception as exc:
+            if _rlp == "groq":
+                st.error(
+                    "Erreur lors de l'appel à **Groq**. Vérifiez `GROQ_API_KEY` et la connectivité."
+                )
+            else:
+                st.error(
+                    "Erreur lors de l'appel à **Amazon Bedrock**. Vérifiez vos credentials AWS et la région."
+                )
+            st.exception(exc)
+            st.stop()
 
-    st.markdown("**Requête générée**")
-    st.code(sql, language="sql")
-
-    try:
         with st.spinner("Exécution de la requête…"):
-            con = _open_readonly()
-            try:
-                result = con.execute(sql).pl()
-            finally:
-                con.close()
-    except Exception as exc:
-        st.error(f"Erreur lors de l'exécution SQL : {exc}")
+            df_b, err_b, duck_ms = _execute_sql(sql_b)
+        _render_result(df_b, err_b, duck_ms)
+
+        append_exploration_metrics_event({
+            "mode": "single",
+            "question_fp": qfp,
+            "llm_provider_ref": _rlp,
+            "model_ref": _mid,
+            "latency_sql_gen_ms": round(gen_ms, 2),
+            "latency_duckdb_ms": round(duck_ms, 2),
+            "duckdb_ok": err_b is None,
+            "rows": len(df_b) if df_b is not None and err_b is None else None,
+        })
         st.stop()
 
-    if len(result) == 0:
-        st.info("Aucun résultat.")
-    else:
-        st.caption(f"{len(result):,} ligne(s) — {len(result.columns)} colonne(s)")
-        st.dataframe(result.to_pandas(), use_container_width=True, hide_index=True)
+    # --- Mode comparaison ---
+    col_ref, col_cmp = st.columns(2, gap="large")
+
+    sql_b = None
+    ms_b = None
+    err_b = None
+    df_b = None
+    duck_b = None
+
+    with col_ref:
+        st.markdown("##### Référence")
+        try:
+            t0 = time.perf_counter()
+            with st.spinner("Génération de la requête…"):
+                sql_b = _invoke_nl_to_sql(ref_chain, question, schema)
+            ms_b = (time.perf_counter() - t0) * 1000
+        except Exception as exc:
+            st.error("Échec de l'agent de référence.")
+            st.exception(exc)
+        if sql_b is not None:
+            with st.spinner("Exécution…"):
+                df_b, err_b, duck_b = _execute_sql(sql_b)
+            _render_result(df_b, err_b, duck_b)
+
+    sql_c = None
+    ms_c = None
+    err_c = None
+    df_c = None
+    duck_c = None
+    cmp_label = _compare_model or "?"
+
+    with col_cmp:
+        st.markdown("##### Second modèle")
+        try:
+            cmp_llm = get_compare_sql_chat_llm(temperature=0.0, max_tokens=600)
+            cmp_chain = _chain_from_llm(cmp_llm)
+        except Exception as exc:
+            st.error("Impossible d'initialiser l'agent de comparaison.")
+            st.exception(exc)
+        else:
+            try:
+                t0 = time.perf_counter()
+                with st.spinner("Génération de la requête…"):
+                    sql_c = _invoke_nl_to_sql(cmp_chain, question, schema)
+                ms_c = (time.perf_counter() - t0) * 1000
+            except Exception as exc:
+                st.error("Échec de l'agent de comparaison.")
+                st.exception(exc)
+            else:
+                with st.spinner("Exécution…"):
+                    df_c, err_c, duck_c = _execute_sql(sql_c)
+                _render_result(df_c, err_c, duck_c)
+
+    sql_identical = (
+        sql_b is not None and sql_c is not None and sql_c.strip() == sql_b.strip()
+    )
+    append_exploration_metrics_event({
+        "mode": "compare",
+        "question_fp": qfp,
+        "compare_backend": _cmp_mode,
+        "llm_provider_ref": _rlp,
+        "model_ref": _mid,
+        "model_compare": cmp_label,
+        "latency_ref_sql_ms": round(ms_b, 2) if ms_b is not None else None,
+        "latency_compare_sql_ms": round(ms_c, 2) if ms_c is not None else None,
+        "latency_ref_duckdb_ms": round(duck_b, 2) if duck_b is not None else None,
+        "latency_compare_duckdb_ms": round(duck_c, 2) if duck_c is not None else None,
+        "duckdb_ok_ref": err_b is None,
+        "duckdb_ok_compare": err_c is None,
+        "rows_ref": len(df_b) if df_b is not None and err_b is None else None,
+        "rows_compare": len(df_c) if df_c is not None and err_c is None else None,
+        "sql_text_equal": sql_identical,
+    })

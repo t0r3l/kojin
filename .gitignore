@@ -66,3 +66,6 @@ task-def.json
 trust-ecs-tasks.json
 s3-read-policy.json
 bedrock-invoke-policy.json
+
+# Fine-tuning generated data
+finetuning/data/

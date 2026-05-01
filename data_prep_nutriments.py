@@ -1,7 +1,147 @@
 import polars as pl
 from huggingface_hub import hf_hub_download
 import re
-from unicodedata import normalize
+from typing import TypeVar
+
+# ─── Filtres source Open Food Facts (France, non obsolète) ─────────────────────
+
+
+def expr_france_not_obsolete() -> pl.Expr:
+    """Produits listés pour la France et non marqués obsolètes dans le Parquet OFF."""
+    return pl.col("countries_tags").list.contains("en:france") & (pl.col("obsolete") == False)
+
+
+def expr_product_name_french() -> pl.Expr:
+    """Après explode/unnest de ``product_name`` : ne garder que le libellé français."""
+    return pl.col("lang") == "fr"
+
+
+# ─── Filtres catalogue exporté (CSV / app Bento + Exploration) ───────────────
+# Règles historiquement dans ``kojin_common.load_products`` : centralisées ici
+# pour que ``run_data_prep`` et le script CLI produisent le même jeu que l’app.
+
+EXCLUDED_CATEGORIES = (
+    r"boissons-alcoolisees|bieres|biere|vins,|,vins$|vins-blancs|vins-rouges|"
+    r"spiritueux|whisky|rhum|vodka|liqueurs?|cocktail|aperitifs?-alcoolise|"
+    r"cidres?|champagnes?|cognac|gin,|,gin$|wine|wines|"
+    r"alcools|alcohols|"
+    r"sodas|soft-drinks|energy-drinks|"
+    r"jus-de-fruits|jus-de-legumes|jus-d|fruit-juices|vegetable-juices|"
+    r"nectars|smoothies|"
+    r"proteines-en-poudre|protein-powder|whey|caseine|bcaa|"
+    r"complements?-alimentaires|mass-gainer|creatine|isolat-de-proteine|"
+    r"protein-shake|gainers|barres-proteinees|protein-bars|energy-bars|"
+    r"complements-pour-le-bodybuilding|"
+    r"sucres,|,sucres$|sucre-blanc|sucre-raffine|sucre-en-poudre|sucre-glace|"
+    r"bonbons|candies|confiseries|confectionery|sweet-snacks|snacks-sucres|"
+    r"sirops|syrups|sirop-de-glucose|sirop-de-fructose|"
+    r"caramels|marshmallow|guimauves|reglisse|nougat|pralines|dragees|"
+    r"pates-a-tartiner-sucrees|pates-de-fruits|"
+    r"chewing-gum|gommes-a-macher|"
+    r"cereales-pour-petit-dejeuner|breakfast-cereals|"
+    r"pop-tarts|brownie|cookie|biscuits|"
+    r"gateaux|cakes|muffins|donuts|beignets|"
+    r"glaces|ice-creams|sorbets|desserts|"
+    r"pancakes|crepes|gaufres|waffles|viennoiseries|"
+    r"sucettes|lollipops|"
+    r"sauces|ketchup|moutardes|mustards|mayonnaises|"
+    r"vinaigrettes|salad-dressings|dressings|"
+    r"condiments|"
+    r"chips-et-frites|chips-and-fries|crisps|potato-crisps|"
+    r"snacks-sales|salty-snacks|amuse-gueules|appetizers|"
+    r"biscuits-aperitifs|tortillas|nachos|"
+    r"barres|bars|cereal-bars|"
+    r"plats-prepares|prepared-meals|plats-cuisines|ready-meals|"
+    r"pizzas|quiches|tartes-salees|"
+    r"sandwiches|sandwichs|wraps|burgers|"
+    r"salades-composees|coleslaw|"
+    r"plats-a-base-de-pates|plats-a-base-de-riz|"
+    r"plats-traiteur|entrees-et-snacks|"
+    r"soupes|soups|potages|velout|"
+    r"surgeles|frozen-foods|"
+    r"fast-food|restauration-rapide|menus-fast-food"
+)
+
+EXCLUDED_NAMES = (
+    r"\bpowder\b|\bpoudre\b|protéines?|proteins?|\bsuper\b|"
+    r"whey|protein.?powder|protéines? en poudre|proteine en poudre|"
+    r"casein|caséine|bcaa|mass.?gainer|créatine|creatine|"
+    r"isolat|protein.?shake|protein.?bar|barre protéinée|barre proteinee|"
+    r"pre.?workout|post.?workout|"
+    r"iso.?whey|iso.?protein|isofood|iso.?food|"
+    r"meal.?replacement|nutrition.?shake|muscle.?milk|"
+    r"mutant|powerbar|musclepharm|muscle.?pharm|orgain|"
+    r"candy|bonbon|marshmallow|guimauve|gummy|gummies|"
+    r"chewing.?gum|nougat|caramel|praline|dragée|dragee|réglisse|reglisse|"
+    r"melting.?heart|tropical.?splash|skittles|haribo|"
+    r"pop.?tart|brownie|fudge|cookie|"
+    r"energy.?drink|energy.?gel|"
+    r"sirop|syrup|"
+    r"collag[eè]ne|spiruline|chlorell[ea]|"
+    r"g[eé]lule|capsule|comprim[eé]|"
+    r"huile essentielle|essential oil|"
+    r"m[eé]latonine|ashwagandha|rhodiola|"
+    r"charbon v[eé]g[eé]tal|detox|minceur|aminciss|"
+    r"huile de foie de morue|cod liver oil|"
+    r"superfood|superaliment|moringa|baobab.?en.?poudre|açaï.?en.?poudre|"
+    r"mix.*immunit|mix.*super|"
+    r"dietary.?supplement|milkshake|"
+    r"chips|crisps|pringles|doritos|nachos|lays|cheetos|"
+    r"potato.?chip|tortilla.?chip|corn.?chip|kettle.?chip|"
+    r"popcorn|crackers|bretzels?|pretzel|"
+    r"snack.?mix|trail.?mix|"
+    # Alcools : domaines, châteaux, crus, cuvées…
+    r"ch[âa]teau |domaine |cuv[ée]e |cru |vignoble|vignerons?|"
+    r"\bvin\b|\bvins\b|\bbière\b|\bbieres?\b|\bbeer\b|\bale\b|\blager\b|"
+    r"\bwine\b|\bvin blanc\b|\bvin rouge\b|\bvin rosé\b|"
+    r"champagne|prosecco|mousseux|crémant|bordeaux|bourgogne|"
+    r"spiritueux|whisky|whiskey|rhum|vodka|cognac|armagnac|"
+    r"pastis|absinthe|tequila|mezcal|"
+    # Plats préparés / menus fast-food
+    r"happy.?meal|maxi.?best|best.?of|big.?mac|mc.?nugget|"
+    r"mc.?donald|mcdo|\bkfc\b|quick.?menu|menu.?enfant|"
+    r"plat.?préparé|plat.?cuisiné|plat.?prepare|plat.?cuisine|"
+    # Autres
+    r"\biso\b|protein.?powder|"
+    r"meal.?replacement.?powder|nutrition.?powder|"
+    r"fruit.?shoot|pur.?jus|\bjus de\b|\bjuice\b|\bnectar\b|"
+    r"\bsoda\b|\bcola\b|\bfanta\b|\bsprite\b|"
+    r"sucette|lollipop|ice.?cream|crème glacée|glace |sorbet|"
+    r"gâteau|gateau|cake|muffin|donut|beignet|"
+    r"crêpe|pancake|waffle|gaufre|viennoiserie|"
+    r"\bsauce\b|ketchup|moutarde|mustard|"
+    r"mayonnaise|\bmayo\b|vinaigrette|dressing|"
+    r"pizza|lasagne|quiche|gratin|"
+    r"sandwich|burger|wrap |croque.?monsieur|croque.?madame"
+)
+
+
+def expr_catalog_export_filters() -> pl.Expr:
+    """Filtres communs sur le DataFrame produits (post extract macros, post tags)."""
+    return (
+        (pl.col("nova_group").is_null() | (pl.col("nova_group") < 4))
+        & ~pl.col("categories").str.to_lowercase().str.contains(EXCLUDED_CATEGORIES)
+        & ~pl.col("product_name").str.to_lowercase().str.contains(EXCLUDED_NAMES)
+        & ~((pl.col("carbohydrates") > 60) & (pl.col("proteins") < 5))
+        & (pl.col("energy-kcal") > 0)
+        & (pl.col("fiber") <= 40)
+        & (pl.col("proteins") <= 85)
+        & (pl.col("fat") <= 100)
+        & (pl.col("carbohydrates") <= 100)
+        # Exclure produits sans aucune valeur de macronutriment
+        & ((pl.col("proteins") + pl.col("fat") + pl.col("carbohydrates") + pl.col("fiber")) > 0)
+        # Exclure produits mal renseignés : kcal incohérents avec macros
+        & (pl.col("energy-kcal") < (pl.col("proteins") * 4 + pl.col("fat") * 9 + pl.col("carbohydrates") * 4) * 2)
+        & (pl.col("energy-kcal") > (pl.col("proteins") * 4 + pl.col("fat") * 9 + pl.col("carbohydrates") * 4) * 0.3)
+    )
+
+
+FrameT = TypeVar("FrameT", pl.DataFrame, pl.LazyFrame)
+
+
+def filter_products_catalog(df: FrameT) -> FrameT:
+    """Applique ``expr_catalog_export_filters()`` (NOVA, exclusions, plausibilité macros)."""
+    return df.filter(expr_catalog_export_filters())
 
 
 def download_data(force_download=False):
@@ -95,9 +235,9 @@ def download_data(force_download=False):
         pl.scan_parquet(local_parquet)
         .select(useful_columns + ["countries_tags", "obsolete"])
         # ne charger que la colonne nécessaire avant tout
-        .filter((pl.col("countries_tags").list.contains("en:france") & pl.col("obsolete") == False))
+        .filter(expr_france_not_obsolete())
         .drop("countries_tags", "obsolete")
-        .explode("product_name").unnest("product_name").filter(pl.col("lang") == "fr").select(
+        .explode("product_name").unnest("product_name").filter(expr_product_name_french()).select(
             # tous les autres champs sauf product_name
             *[c for c in useful_columns if c not in {"product_name"}],
             # on reprend "text" en l'appelant product_name
@@ -169,44 +309,51 @@ def get_nutriments(data):
 
     return products_names_with_macro_nutriments
 
-"""Supprime les caractères n'utilisant pas les caractères non latins"""
-def remove_non_latin(text: str) -> str:
-    if text is None:
-        return ""
-    return ''.join(re.findall(r'[a-zA-ZÀ-ÿ0-9\s\-.,;:!?()\[\]{}]', text))
+# Regex native Polars : ne garder que les caractères latins, chiffres, ponctuation courante
+_KEEP_LATIN_PATTERN = r"[^a-zA-ZÀ-ÿ0-9\s\-.,;:!?()\[\]{}]"
+
+_ACCENT_MAP = [
+    ("àáâãäå", "a"), ("èéêë", "e"), ("ìíîï", "i"), ("òóôõö", "o"),
+    ("ùúûü", "u"), ("ýÿ", "y"), ("ñ", "n"), ("ç", "c"), ("æ", "ae"), ("œ", "oe"),
+]
+
+
+def _strip_accents_expr(col: str) -> pl.Expr:
+    """Supprime les accents courants via chaîne de str.replace_all natifs (pas de map_elements).
+
+    NOTE: Chains ~30 .str.replace_all() calls. Could be replaced with a single
+    regex or mapping table if performance on larger datasets becomes an issue.
+    """
+    expr = pl.col(col)
+    for chars, repl in _ACCENT_MAP:
+        for c in chars:
+            expr = expr.str.replace_all(c, repl, literal=True)
+    return expr
 
 
 def clean_categories(data: pl.LazyFrame) -> pl.LazyFrame:
-    cleaned_df = data.with_columns(
-        pl.col("categories").map_elements(remove_non_latin, return_dtype=pl.String).alias("categories")
-    )
+    # Étape 1 : nettoyage + normalisation
+    cleaned = data.with_columns(
+        pl.col("categories")
+        .fill_null("")
+        .str.replace_all(_KEEP_LATIN_PATTERN, "")
+        .str.to_lowercase()
+        .str.replace_all(" ?, ?", ",")
+        .str.replace_all(" ", "-")
+        .alias("categories"),
 
-    cleaned_df = cleaned_df.with_columns(
         pl.col("labels")
         .fill_null("")
         .str.to_lowercase()
         .str.replace_all(" ?, ?", ",")
         .str.replace_all(" ", "-")
-
         .alias("labels"),
-
-        pl.col("categories")
-        .fill_null("")
-        .str.to_lowercase()
-        .str.replace_all(" ?, ?", ",")
-        .str.replace_all(" ", "-")
-        .alias("categories"),
     )
-
-    # Supprimer les accents :
-    cleaned_df = cleaned_df.with_columns(
-        pl.col("categories").map_elements(lambda x: normalize("NFKD", x).encode("ascii", "ignore").decode(),
-                                          return_dtype=pl.String).alias("categories"),
-        pl.col("labels").map_elements(lambda x: normalize("NFKD", x).encode("ascii", "ignore").decode(),
-                                      return_dtype=pl.String).alias("labels")
+    # Étape 2 : suppression des accents (expressions natives, sans map_elements)
+    return cleaned.with_columns(
+        _strip_accents_expr("categories").alias("categories"),
+        _strip_accents_expr("labels").alias("labels"),
     )
-
-    return cleaned_df
 
 def add_tags(data: pl.LazyFrame) -> pl.LazyFrame:
     return data.with_columns(
@@ -259,10 +406,10 @@ def process_batched(parquet_path, batch_size=50):
 
         batch = (
             batch.lazy()
-            .filter(pl.col("countries_tags").list.contains("en:france") & (pl.col("obsolete") == False))
+            .filter(expr_france_not_obsolete())
             .drop("countries_tags", "obsolete")
             .explode("product_name").unnest("product_name")
-            .filter(pl.col("lang") == "fr")
+            .filter(expr_product_name_french())
             .select(
                 *[c for c in main_info + ["nutriments"] if c not in {"product_name"}],
                 pl.col("text").alias("product_name"),
@@ -304,17 +451,14 @@ if __name__ == "__main__":
     df = process_batched(local_parquet, batch_size=50)
     print(f"Products after nutriment extraction: {len(df)}")
 
-    df = clean_categories(df.lazy())
-    df = add_tags(df)
+    df = filter_products_catalog(add_tags(clean_categories(df.lazy())))
     df = df.collect()
 
-    # Exclure les produits ultra-transformés (NOVA 4) à la source
-    before = len(df)
-    df = df.filter(
-        pl.col("nova_group").is_null() | (pl.col("nova_group") < 4)
-    )
-    print(f"NOVA 4 retirés : {before - len(df)} produits")
+    print(f"Nombre de lignes (après filtres catalogue) : {len(df)}")
 
-    print(f"Nombre de lignes : {len(df)}")
+    # Libellés type « Fraises » (cohérent avec kojin_common.load_products)
+    from kojin_common import normalize_catalog_product_names
+
+    df = normalize_catalog_product_names(df)
     df.write_csv("./data/products_names_with_macro_nutriments.csv")
     print("Done.")

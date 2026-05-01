@@ -3,10 +3,12 @@
 Centralises:
 - Japanese minimalist CSS theme (``apply_theme``)
 - Data file paths and S3 hydration (``ensure_csv_from_s3``)
-- Domain constants (regimes, goals, bento names, excluded categories…)
-- Polars data loading and filtering helpers
+- Domain constants (regimes, goals, bento names…); filtres catalogue produits dans ``data_prep_nutriments``
+- Polars data loading helpers (filtres préparation via ``filter_products_catalog``)
 - The bento optimiser (``optimize_bento``)
-- Amazon Bedrock LangChain LLM factory (``get_chat_llm``)
+- Provider-agnostic LangChain factory (``get_chat_llm``) : **Amazon Bedrock** ou **Groq**
+  (HTTP OpenAI-compatible) selon ``LLM_PROVIDER`` / présence de ``GROQ_API_KEY`` ;
+  compare optionnel Bedrock/OpenAI-compat (``get_compare_sql_chat_llm``).
 """
 
 from __future__ import annotations
@@ -50,22 +52,38 @@ def ensure_csv_from_s3() -> None:
 
 # ─── Theme ───────────────────────────────────────────────────────────────────
 
+# Sections: root variables · sidebar · typography · widgets (sliders, selectbox, radio)
+#           data tables · buttons · miscellaneous (expander, tabs, scrollbar)
 _CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;400;700&family=Inter:wght@300;400;500&display=swap');
-
 :root {
     --ink: #1a1a1a;
     --paper: #fafaf8;
     --stone: #888;
     --line: #e0e0dc;
+    --font-serif: Georgia, 'Times New Roman', serif;
+
+}
+
+/* Remplace la couleur primaire Streamlit (orange) par blanc dans la sidebar */
+:root, [data-testid="stSidebar"] {
+    --primary: #ffffff !important;
+}
+/* piste active (gauche du curseur) en blanc, piste inactive (droite) en gris */
+[data-testid="stSidebar"] div[data-baseweb="slider"] > div > div > div:first-child {
+    background-color: #ffffff !important;
+}
+[data-testid="stSidebar"] div[data-baseweb="slider"] > div > div > div:last-child {
+    background-color: #555 !important;
 }
 
 html, body, [data-testid="stAppViewContainer"] {
     background-color: var(--paper) !important;
     color: var(--ink) !important;
-    font-family: 'Inter', sans-serif !important;
-    font-weight: 300;
+    font-family: var(--font-serif) !important;
+    font-size: 16px;
+    font-weight: normal;
+    line-height: 1.7;
 }
 
 [data-testid="stSidebar"] {
@@ -77,7 +95,7 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 [data-testid="stSidebar"] label {
     color: var(--paper) !important;
-    font-family: 'Inter', sans-serif !important;
+    font-family: var(--font-serif) !important;
     font-weight: 400;
     font-size: 0.82rem;
     letter-spacing: 0.04em;
@@ -90,32 +108,93 @@ html, body, [data-testid="stAppViewContainer"] {
     color: var(--paper) !important;
 }
 
+/* slider thumb (poignée) en blanc */
+[data-testid="stSidebar"] [data-testid="stSlider"] [role="slider"] {
+    background-color: #ffffff !important;
+    border-color: #ffffff !important;
+}
+/* valeur affichée sous le thumb en blanc */
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stSliderThumbValue"] {
+    color: var(--paper) !important;
+}
+/* textes labels et ticks slider en blanc */
+[data-testid="stSidebar"] [data-testid="stSlider"] label,
+[data-testid="stSidebar"] [data-testid="stSlider"] p,
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMin"],
+[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stTickBarMax"] {
+    color: var(--paper) !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+}
+/* cercle du radio en blanc */
+[data-testid="stSidebar"] [data-testid="stRadio"] [data-baseweb="radio"] [role="radio"] {
+    border-color: #ffffff !important;
+    background-color: transparent !important;
+    width: 14px !important;
+    height: 14px !important;
+    min-width: 14px !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] [data-baseweb="radio"] [role="radio"][aria-checked="true"] {
+    background-color: #ffffff !important;
+    border-color: #ffffff !important;
+}
+/* textes des options radio en blanc, plus petits */
+[data-testid="stSidebar"] [data-testid="stRadio"] label span {
+    color: var(--paper) !important;
+    font-size: 0.75rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    gap: 6px !important;
+    align-items: center !important;
+}
+/* boutons +/- des number inputs toujours visibles */
+[data-testid="stSidebar"] [data-testid="stNumberInput"] button {
+    opacity: 1 !important;
+    visibility: visible !important;
+    color: #ffffff !important;
+    border-color: #555 !important;
+    background-color: #2a2a2a !important;
+}
+
 h1 {
-    font-family: 'Noto Serif JP', serif !important;
-    font-weight: 200 !important;
-    letter-spacing: 0.12em;
-    font-size: 2.8rem !important;
+    font-family: var(--font-serif) !important;
+    font-weight: bold !important;
+    font-size: clamp(26px, 4vw, 40px) !important;
+    line-height: 1.25 !important;
+    letter-spacing: -0.5px !important;
     margin-bottom: 0.1em !important;
 }
 
 h2, h3 {
-    font-family: 'Noto Serif JP', serif !important;
-    font-weight: 400 !important;
-    letter-spacing: 0.06em;
+    font-family: var(--font-serif) !important;
+    font-size: 18px !important;
+    font-weight: normal !important;
+    font-style: italic !important;
+    line-height: 1.35 !important;
+    letter-spacing: normal !important;
+}
+
+p {
+    font-family: var(--font-serif) !important;
+    font-size: 16px !important;
+    font-weight: normal !important;
+    line-height: 1.7 !important;
 }
 
 .subtitle {
-    font-size: 0.9rem;
+    font-family: var(--font-serif);
+    font-size: 1rem;
     color: var(--stone);
-    letter-spacing: 0.08em;
+    letter-spacing: 0.02em;
     margin-bottom: 2rem;
 }
 
 .bento-header {
-    font-family: 'Noto Serif JP', serif;
-    font-weight: 200;
+    font-family: var(--font-serif);
+    font-weight: normal;
+    font-style: italic;
     font-size: 1.4rem;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.04em;
     border-bottom: 1px solid var(--ink);
     padding-bottom: 0.4rem;
     margin-top: 1.5rem;
@@ -125,21 +204,21 @@ h2, h3 {
 .bento-fraction {
     font-size: 0.78rem;
     color: var(--stone);
-    letter-spacing: 0.06em;
+    letter-spacing: 0.02em;
     margin-bottom: 0.8rem;
 }
 
 .product-count {
-    font-family: 'Noto Serif JP', serif;
+    font-family: var(--font-serif);
     font-size: 3rem;
-    font-weight: 200;
+    font-weight: bold;
     line-height: 1;
 }
 .product-count-label {
     font-size: 0.75rem;
-    color: var(--stone);
+    color: #AD9E7B;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.08em;
 }
 
 .targets-box {
@@ -150,9 +229,9 @@ h2, h3 {
     margin: 1rem 0;
     font-size: 0.85rem;
     line-height: 1.8;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.02em;
 }
-.targets-box strong { font-weight: 500; }
+.targets-box strong { font-weight: 600; }
 
 div[data-testid="stDataFrame"] {
     border: 1px solid var(--line) !important;
@@ -172,9 +251,9 @@ button[kind="primary"] {
     color: var(--paper) !important;
     border: none !important;
     border-radius: 0 !important;
-    font-family: 'Noto Serif JP', serif !important;
+    font-family: var(--font-serif) !important;
     font-weight: 400 !important;
-    letter-spacing: 0.1em !important;
+    letter-spacing: 0.08em !important;
     text-transform: uppercase !important;
     padding: 0.7rem 2rem !important;
 }
@@ -187,11 +266,11 @@ button[kind="secondary"] {
     color: var(--paper) !important;
     border: none !important;
     border-radius: 0 !important;
-    font-family: 'Noto Serif JP', serif !important;
+    font-family: var(--font-serif) !important;
     font-weight: 400 !important;
-    letter-spacing: 0.08em !important;
-    text-transform: uppercase !important;
-    font-size: 0.78rem !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    font-size: 0.85rem !important;
     padding: 0.5rem 1.4rem !important;
 }
 button[kind="secondary"] p,
@@ -203,24 +282,30 @@ button[kind="secondary"]:hover {
     color: var(--paper) !important;
 }
 
+button[kind="tertiary"] {
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    font-family: var(--font-serif) !important;
+}
+
 .stDivider { border-color: var(--line) !important; }
 
 [data-testid="stMetricValue"] {
-    font-family: 'Noto Serif JP', serif !important;
-    font-weight: 200 !important;
+    font-family: var(--font-serif) !important;
+    font-weight: bold !important;
 }
 
 .fraction-remaining {
     font-size: 0.8rem;
     color: var(--stone);
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     padding: 0.3rem 0;
 }
 .fraction-ok { color: var(--stone); }
 .fraction-over { color: #c44; }
 
 .sql-block {
-    font-family: 'JetBrains Mono', 'Menlo', monospace;
+    font-family: 'Menlo', 'Courier New', monospace;
     font-size: 0.78rem;
     color: var(--stone);
     background: #f3f3ee;
@@ -228,6 +313,21 @@ button[kind="secondary"]:hover {
     border-left: 2px solid var(--ink);
     margin: 0.6rem 0;
     white-space: pre-wrap;
+}
+/* Search / text inputs in main content */
+section[data-testid="stMain"] div[data-testid="stTextInput"] input {
+    color: #fafaf8 !important;
+    background-color: #1a1a1a !important;
+    border: 1px solid #444 !important;
+}
+section[data-testid="stMain"] div[data-testid="stTextInput"] input::placeholder {
+    color: #888 !important;
+}
+/* Number inputs (quantity columns in grams) in main content */
+section[data-testid="stMain"] div[data-testid="stNumberInput"] input {
+    color: #fafaf8 !important;
+    background-color: #1a1a1a !important;
+    border: 1px solid #444 !important;
 }
 </style>
 """
@@ -286,92 +386,8 @@ GOAL_PARAMS = {
     "bulk":     (1.15, 1.6, 0.25, 100),
 }
 
-BENTO_NAMES = ["一 Ichi", "二 Ni", "三 San", "四 Shi", "五 Go"]
+BENTO_NAMES = ["n°1", "n°2", "n°3", "n°4", "n°5"]
 
-
-# ─── Filter rules ────────────────────────────────────────────────────────────
-
-EXCLUDED_CATEGORIES = (
-    r"boissons-alcoolisees|bieres|biere|vins,|,vins$|vins-blancs|vins-rouges|"
-    r"spiritueux|whisky|rhum|vodka|liqueurs?|cocktail|aperitifs?-alcoolise|"
-    r"cidres?|champagnes?|cognac|gin,|,gin$|wine|wines|"
-    r"sodas|soft-drinks|energy-drinks|"
-    r"jus-de-fruits|jus-de-legumes|jus-d|fruit-juices|vegetable-juices|"
-    r"nectars|smoothies|"
-    r"proteines-en-poudre|protein-powder|whey|caseine|bcaa|"
-    r"complements?-alimentaires|mass-gainer|creatine|isolat-de-proteine|"
-    r"protein-shake|gainers|barres-proteinees|protein-bars|energy-bars|"
-    r"complements-pour-le-bodybuilding|"
-    r"sucres,|,sucres$|sucre-blanc|sucre-raffine|sucre-en-poudre|sucre-glace|"
-    r"bonbons|candies|confiseries|confectionery|sweet-snacks|snacks-sucres|"
-    r"sirops|syrups|sirop-de-glucose|sirop-de-fructose|"
-    r"caramels|marshmallow|guimauves|reglisse|nougat|pralines|dragees|"
-    r"pates-a-tartiner-sucrees|pates-de-fruits|"
-    r"chewing-gum|gommes-a-macher|"
-    r"cereales-pour-petit-dejeuner|breakfast-cereals|"
-    r"pop-tarts|brownie|cookie|biscuits|"
-    r"gateaux|cakes|muffins|donuts|beignets|"
-    r"glaces|ice-creams|sorbets|desserts|"
-    r"pancakes|crepes|gaufres|waffles|viennoiseries|"
-    r"sucettes|lollipops|"
-    r"sauces|ketchup|moutardes|mustards|mayonnaises|"
-    r"vinaigrettes|salad-dressings|dressings|"
-    r"condiments|"
-    r"chips-et-frites|chips-and-fries|crisps|potato-crisps|"
-    r"snacks-sales|salty-snacks|amuse-gueules|appetizers|"
-    r"biscuits-aperitifs|tortillas|nachos|"
-    r"barres|bars|cereal-bars|"
-    r"plats-prepares|prepared-meals|plats-cuisines|ready-meals|"
-    r"pizzas|quiches|tartes-salees|"
-    r"sandwiches|sandwichs|wraps|burgers|"
-    r"salades-composees|coleslaw|"
-    r"plats-a-base-de-pates|plats-a-base-de-riz|"
-    r"plats-traiteur|entrees-et-snacks|"
-    r"soupes|soups|potages|velout|"
-    r"surgeles|frozen-foods"
-)
-
-EXCLUDED_NAMES = (
-    r"whey|protein.?powder|protéines? en poudre|proteine en poudre|"
-    r"casein|caséine|bcaa|mass.?gainer|créatine|creatine|"
-    r"isolat|protein.?shake|protein.?bar|barre protéinée|barre proteinee|"
-    r"pre.?workout|post.?workout|"
-    r"iso.?whey|iso.?protein|isofood|iso.?food|"
-    r"meal.?replacement|nutrition.?shake|muscle.?milk|"
-    r"mutant|powerbar|musclepharm|muscle.?pharm|orgain|"
-    r"candy|bonbon|marshmallow|guimauve|gummy|gummies|"
-    r"chewing.?gum|nougat|caramel|praline|dragée|dragee|réglisse|reglisse|"
-    r"melting.?heart|tropical.?splash|skittles|haribo|"
-    r"pop.?tart|brownie|fudge|cookie|"
-    r"energy.?drink|energy.?gel|"
-    r"sirop|syrup|"
-    r"collag[eè]ne|spiruline|chlorell[ea]|"
-    r"g[eé]lule|capsule|comprim[eé]|"
-    r"huile essentielle|essential oil|"
-    r"m[eé]latonine|ashwagandha|rhodiola|"
-    r"charbon v[eé]g[eé]tal|detox|minceur|aminciss|"
-    r"huile de foie de morue|cod liver oil|"
-    r"superfood|moringa|baobab.?en.?poudre|açaï.?en.?poudre|"
-    r"dietary.?supplement|milkshake|"
-    r"chips|crisps|pringles|doritos|nachos|lays|cheetos|"
-    r"potato.?chip|tortilla.?chip|corn.?chip|kettle.?chip|"
-    r"popcorn|crackers|bretzels?|pretzel|"
-    r"snack.?mix|trail.?mix|"
-    r"\bwine\b|\bvin blanc\b|\bvin rouge\b|\bvin rosé\b|"
-    r"\bbeer\b|\bbière\b|\bale\b|\blager\b|"
-    r"\biso\b|protein.?powder|"
-    r"meal.?replacement.?powder|nutrition.?powder|"
-    r"fruit.?shoot|pur.?jus|\bjus de\b|\bjuice\b|\bnectar\b|"
-    r"\bsoda\b|\bcola\b|\bfanta\b|\bsprite\b|"
-    r"sucette|lollipop|ice.?cream|crème glacée|glace |sorbet|"
-    r"gâteau|gateau|cake|muffin|donut|beignet|"
-    r"crêpe|pancake|waffle|gaufre|viennoiserie|"
-    r"\bsauce\b|ketchup|moutarde|mustard|"
-    r"mayonnaise|\bmayo\b|vinaigrette|dressing|"
-    r"pizza|lasagne|quiche|gratin|"
-    r"sandwich|burger|wrap |croque.?monsieur|croque.?madame|"
-    r"plat.?préparé|plat.?cuisiné|plat.?prepare|plat.?cuisine"
-)
 
 OIL_PATTERN = r"(?i)\bhuile\b|\boil\b|\bhuile d|\bhuile de"
 
@@ -398,26 +414,90 @@ def compute_targets(gender: str, age: int, weight: float, height: float,
     return energy, proteins, fat, carbs, portion_leg
 
 
+def format_product_display_label(s: str | None) -> str:
+    """Affichage type « Fraises » : première lettre majuscule, le reste en minuscules."""
+    if s is None:
+        return ""
+    t = str(s).strip()
+    if len(t) <= 1:
+        return t.upper() if t else t
+    return t[0].upper() + t[1:].lower()
+
+
+def normalize_catalog_product_names(df: pl.DataFrame) -> pl.DataFrame:
+    """Uniformise ``product_name`` sur tout le catalogue (chargement CSV, préparation)."""
+    if "product_name" not in df.columns or len(df) == 0:
+        return df
+    # Capitalise la 1re lettre, reste en minuscules — expressions natives Polars
+    return df.with_columns(
+        (
+            pl.col("product_name").fill_null("").str.strip_chars()
+            .str.slice(0, 1).str.to_uppercase()
+            + pl.col("product_name").fill_null("").str.strip_chars()
+            .str.slice(1).str.to_lowercase()
+        ).alias("product_name")
+    )
+
+
+def catalog_rows_matching_name(catalog: pl.DataFrame, name: str) -> pl.DataFrame:
+    """Filtre le catalogue sur ``product_name`` ; secours insensible à la casse (sessions anciennes)."""
+    if not name or catalog is None or len(catalog) == 0 or "product_name" not in catalog.columns:
+        return catalog.head(0)
+    nm = str(name).strip()
+    pm = catalog.filter(pl.col("product_name") == nm)
+    if len(pm) > 0:
+        return pm
+    return catalog.filter(pl.col("product_name").str.to_lowercase() == nm.lower())
+
+
+def canonical_product_name_map_lower(catalog: pl.DataFrame) -> dict[str, str]:
+    """minuscules → nom canonique présent dans le catalogue (pour aligner colonne ``Aliment``)."""
+    m: dict[str, str] = {}
+    for p in catalog["product_name"].to_list():
+        k = str(p).strip().lower()
+        if k:
+            m.setdefault(k, str(p))
+    return m
+
+
+def align_bento_aliments_to_catalog(df: pl.DataFrame | None, catalog: pl.DataFrame) -> pl.DataFrame | None:
+    """Réécrit les ``Aliment`` des bentos avec le libellé du catalogue si équivalent modulo casse."""
+    if df is None or len(df) == 0 or catalog is None or len(catalog) == 0:
+        return df
+    if "Aliment" not in df.columns:
+        return df
+    m = canonical_product_name_map_lower(catalog)
+    names = [str(x) for x in df["Aliment"].to_list()]
+    new_names = [m.get(nm.strip().lower(), nm) for nm in names]
+    if new_names == names:
+        return df
+    return df.with_columns(pl.Series(name="Aliment", values=new_names, dtype=pl.String))
+
+
+def format_exploration_results_for_display(df: pl.DataFrame | None) -> pl.DataFrame | None:
+    """Met en forme ``product_name`` dans les tableaux Exploration (requêtes DuckDB)."""
+    if df is None or len(df) == 0 or "product_name" not in df.columns:
+        return df
+    # Capitalise la 1re lettre — expressions natives Polars
+    return df.with_columns(
+        (
+            pl.col("product_name").fill_null("").str.strip_chars()
+            .str.slice(0, 1).str.to_uppercase()
+            + pl.col("product_name").fill_null("").str.strip_chars()
+            .str.slice(1).str.to_lowercase()
+        ).alias("product_name")
+    )
+
+
 # ─── Data loading ────────────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner="Chargement des données…")
 def load_products(path: str) -> pl.DataFrame:
+    from data_prep_nutriments import filter_products_catalog
+
     df = pl.read_csv(path, ignore_errors=True, separator=",", truncate_ragged_lines=True)
-    df = df.filter(
-        (pl.col("nova_group").is_null() | (pl.col("nova_group") < 4))
-        & ~pl.col("categories").str.to_lowercase().str.contains(EXCLUDED_CATEGORIES)
-        & ~pl.col("product_name").str.to_lowercase().str.contains(EXCLUDED_NAMES)
-        & ~(
-            (pl.col("carbohydrates") > 60)
-            & (pl.col("proteins") < 5)
-        )
-        & (pl.col("energy-kcal") > 0)
-        & (pl.col("fiber") <= 40)
-        & (pl.col("proteins") <= 85)
-        & (pl.col("fat") <= 100)
-        & (pl.col("carbohydrates") <= 100)
-    )
-    return df
+    df = filter_products_catalog(df)
+    return normalize_catalog_product_names(df)
 
 
 def apply_regime(products: pl.DataFrame, regime: str) -> pl.DataFrame:
@@ -503,15 +583,18 @@ def optimize_bento(
         nutr_cols.append("portion_legumes")
         targets = np.concatenate((targets, [portion_legumes * meal_fraction]))
 
-    for col in nutr_cols:
-        if col not in products_df.columns:
-            products_df = products_df.with_columns(pl.lit(0.0).alias(col))
+    # Ajout des colonnes manquantes en un seul appel
+    missing_cols = [col for col in nutr_cols if col not in products_df.columns]
+    if missing_cols:
+        products_df = products_df.with_columns([pl.lit(0.0).alias(col) for col in missing_cols])
 
     if "portion_maximale" not in products_df.columns:
         products_df = products_df.with_columns(pl.lit(200.0).alias("portion_maximale"))
 
-    for col in nutr_cols:
-        products_df = products_df.with_columns(pl.col(col).fill_nan(0.0).fill_null(0.0))
+    # fill_nan + fill_null en un seul appel
+    products_df = products_df.with_columns([
+        pl.col(col).fill_nan(0.0).fill_null(0.0) for col in nutr_cols
+    ])
 
     arr = products_df.select(nutr_cols).to_numpy() / 100.0
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
@@ -520,9 +603,8 @@ def optimize_bento(
 
     x, _masque, sel_indices = _run_solver(M, targets, upper_bounds)
 
-    selected_products = products_df.filter(
-        pl.Series(range(len(products_df))).is_in(sel_indices.tolist())
-    )
+    # Indexation directe plutôt que filter + is_in (plus rapide)
+    selected_products = products_df[sel_indices.tolist()]
 
     quantities = x
     pos_mask = quantities > 1e-6
@@ -578,7 +660,13 @@ def optimize_bento(
 # ─── Data preparation pipeline ───────────────────────────────────────────────
 
 def run_data_prep():
-    from data_prep_nutriments import add_tags, clean_categories, download_data, get_nutriments
+    from data_prep_nutriments import (
+        add_tags,
+        clean_categories,
+        download_data,
+        filter_products_catalog,
+        get_nutriments,
+    )
 
     with st.spinner("Téléchargement depuis Hugging Face…"):
         df = download_data(True)
@@ -588,21 +676,66 @@ def run_data_prep():
         df = clean_categories(df)
     with st.spinner("Ajout des tags…"):
         df = add_tags(df)
+    with st.spinner("Filtrage catalogue…"):
+        df = filter_products_catalog(df)
     with st.spinner("Sauvegarde…"):
         df = df.collect()
+        df = normalize_catalog_product_names(df)
         os.makedirs(DATA_DIR, exist_ok=True)
         df.write_csv(CSV_PATH)
     return df
 
 
-# ─── LLM — Amazon Bedrock only (LangChain) ───────────────────────────────────
+# ─── LLM — Bedrock OU Groq (LangChain), agnostic AWS vs local ────────────────
 #
-# The Exploration page always uses ``ChatBedrockConverse`` against
-# ``BEDROCK_MODEL_ID`` (Nova Micro by default). Auth is IAM everywhere —
-# task role in ECS, ``~/.aws`` / SSO / env vars on a developer laptop.
-# There is no third-party LLM fallback.
+# Exploration : référence = ``reference_llm_provider()`` → Bedrock (**IAM**) ou Groq (**API key**).
+# Définir explicitement ``LLM_PROVIDER`` en prod ECS : ``bedrock`` (défaut AWS sans Groq)
+# ou ``groq``. Mode ``auto`` : Groq si ``GROQ_API_KEY`` (env ou ``st.secrets``), sinon Bedrock.
 
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
+# Agent secondaire (compare) — Bedrock uniquement ou ``OPENAI_COMPAT_*``.
+BEDROCK_COMPARE_MODEL_ID = os.environ.get("BEDROCK_COMPARE_MODEL_ID", "").strip()
+
+GROQ_OPENAI_BASE = "https://api.groq.com/openai/v1"
+GROQ_MODEL_ID = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant").strip()
+
+
+def _secret_or_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+    try:
+        val = st.secrets.get(name)
+        return str(val).strip() if val else None
+    except (AttributeError, FileNotFoundError, KeyError):
+        return None
+
+
+def reference_llm_provider() -> str:
+    """``groq`` | ``bedrock`` — résolu au moment de l'appel (pas mis en cache ici)."""
+    mode = (os.environ.get("LLM_PROVIDER") or "auto").strip().lower()
+    if mode == "groq":
+        return "groq"
+    if mode == "bedrock":
+        return "bedrock"
+    if mode != "auto" and mode != "":
+        pass  # valeur inconnue → traiter comme auto
+    if _secret_or_env("GROQ_API_KEY"):
+        return "groq"
+    return "bedrock"
+
+
+def reference_llm_label() -> str:
+    """Libellé court pour titres Exploration / logs."""
+    if reference_llm_provider() == "groq":
+        return f"Groq — {GROQ_MODEL_ID}"
+    return str(BEDROCK_MODEL_ID)
+
+
+def reference_model_id_for_metrics() -> str:
+    if reference_llm_provider() == "groq":
+        return GROQ_MODEL_ID
+    return BEDROCK_MODEL_ID
 
 
 def _bedrock_region() -> str:
@@ -613,18 +746,126 @@ def _bedrock_region() -> str:
     )
 
 
-def _build_bedrock_chat(temperature: float, max_tokens: int):
+def _build_bedrock_chat(model_id: str, temperature: float, max_tokens: int):
     from langchain_aws import ChatBedrockConverse
 
     return ChatBedrockConverse(
-        model_id=BEDROCK_MODEL_ID,
+        model_id=model_id,
         region_name=_bedrock_region(),
         temperature=temperature,
         max_tokens=max_tokens,
     )
 
 
+def _build_groq_chat(temperature: float, max_tokens: int):
+    from langchain_openai import ChatOpenAI
+
+    key = _secret_or_env("GROQ_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "Groq sélectionné (LLM_PROVIDER=groq ou auto avec clé attendue) mais "
+            "`GROQ_API_KEY` est absent — définit la variable d'environnement ou "
+            "ajoute `GROQ_API_KEY` dans `.streamlit/secrets.toml`."
+        )
+    return ChatOpenAI(
+        base_url=GROQ_OPENAI_BASE.rstrip("/"),
+        model=GROQ_MODEL_ID,
+        api_key=key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
 @st.cache_resource(show_spinner=False)
+def _cached_ref_llm_groq(temperature: float, max_tokens: int):
+    return _build_groq_chat(temperature, max_tokens)
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_ref_llm_bedrock(model_id: str, temperature: float, max_tokens: int):
+    return _build_bedrock_chat(model_id, temperature, max_tokens)
+
+
 def get_chat_llm(temperature: float = 0.1, max_tokens: int = 800):
-    """Return a LangChain chat model backed by Amazon Bedrock (Converse API)."""
-    return _build_bedrock_chat(temperature, max_tokens)
+    """Référence Exploration : Groq ou Bedrock selon ``LLM_PROVIDER`` / ``GROQ_API_KEY``."""
+    if reference_llm_provider() == "groq":
+        return _cached_ref_llm_groq(temperature, max_tokens)
+    return _cached_ref_llm_bedrock(BEDROCK_MODEL_ID, temperature, max_tokens)
+
+
+def compare_agent_mode() -> str | None:
+    """``bedrock_compare`` > ``openai_compat`` > ``None`` (priorité aux deuxième agent Bedrock)."""
+    if BEDROCK_COMPARE_MODEL_ID:
+        return "bedrock_compare"
+    if os.environ.get("OPENAI_COMPAT_BASE_URL", "").strip() and os.environ.get("OPENAI_COMPAT_MODEL", "").strip():
+        return "openai_compat"
+    return None
+
+
+def compare_sql_llm_label() -> str | None:
+    """Label affiché pour l'agent de comparaison (Bedrock Llama/custom ou compatible OpenAI)."""
+    mode = compare_agent_mode()
+    if mode == "bedrock_compare":
+        return BEDROCK_COMPARE_MODEL_ID
+    if mode == "openai_compat":
+        return os.environ.get("OPENAI_COMPAT_MODEL", "").strip() or None
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def get_compare_sql_chat_llm(temperature: float = 0.0, max_tokens: int = 600):
+    """Second agent Exploration : soit ``BEDROCK_COMPARE_MODEL_ID``, soit compatible OpenAI (``OPENAI_COMPAT_*``)."""
+    if BEDROCK_COMPARE_MODEL_ID:
+        return _build_bedrock_chat(
+            BEDROCK_COMPARE_MODEL_ID, temperature, max_tokens
+        )
+
+    base_url = os.environ.get("OPENAI_COMPAT_BASE_URL", "").strip()
+    model_name = os.environ.get("OPENAI_COMPAT_MODEL", "").strip()
+    if not base_url or not model_name:
+        raise RuntimeError(
+            "Missing OPENAI_COMPAT_BASE_URL and/or OPENAI_COMPAT_MODEL "
+            "(required for compare SQL agent)."
+        )
+
+    from langchain_openai import ChatOpenAI
+
+    api_key = os.environ.get("OPENAI_COMPAT_API_KEY", "-")
+    url = base_url.rstrip("/")
+    return ChatOpenAI(
+        base_url=url,
+        model=model_name,
+        api_key=api_key if api_key else "-",
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def append_exploration_metrics_event(event: dict) -> None:
+    """Append one JSON line to an NDJSON file when ``KOJIN_EXPLORATION_LOG_JSONL`` is truthy.
+
+    Used to monitor latency, SQL equality, and DuckDB success in CloudWatch Logs
+    (ship the file or stdout) or ad-hoc analysis. Never raises into the UI.
+    """
+    flag = os.environ.get("KOJIN_EXPLORATION_LOG_JSONL", "").lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return
+    import json
+    from datetime import datetime, timezone
+
+    path = os.environ.get("KOJIN_EXPLORATION_LOG_PATH", "").strip()
+    if not path:
+        path = "/tmp/kojin_exploration_metrics.ndjson"
+
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        **event,
+    }
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass

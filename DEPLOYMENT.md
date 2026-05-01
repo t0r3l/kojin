@@ -7,7 +7,7 @@ L'application est une UI web mono-conteneur Streamlit (multi-pages) qui :
 - embarque l'optimiseur de bentos (NNLS + BVLS, `scipy`) ;
 - **télécharge le CSV de produits depuis un bucket S3 au démarrage** (variable d'environnement `DATA_S3_URI`) ;
 - matérialise une base **DuckDB** locale en lecture seule pour la page Exploration ;
-- appelle **Amazon Bedrock (Nova Micro)** via **LangChain** pour traduire les questions de l'utilisateur en SQL DuckDB — backend LLM le moins cher du catalogue.
+- appelle **Amazon Bedrock** via **LangChain** pour les requêtes langage naturel → SQL (**référence** + comparateur Llama/OpenAI-compat optionnel) ;
 
 ## 1. Architecture cible
 
@@ -32,7 +32,7 @@ Utilisateur  ── HTTPS ─▶│  Application Load Balancer │──┐
                          ▼                         ▼
                  ┌───────────────┐       ┌──────────────────────┐
                  │   S3 Bucket   │       │  Amazon Bedrock      │
-                 │ products_*.csv│       │  Nova Micro (LLM)    │
+                 │ products_*.csv│       │  (Nova / Llama, etc.)│
                  └───────────────┘       └──────────────────────┘
 
 Logs : CloudWatch Logs    |   Images : ECR    |   IAM : rôle exécution + rôle tâche
@@ -265,6 +265,142 @@ aws iam put-role-policy \
 
 > **Note :** dans la console AWS **Bedrock → Model access** de la région `${AWS_REGION}`, activez d'abord l'accès au modèle `amazon.nova-micro-v1:0` (étape manuelle et unique).
 
+### 6.4 Policy IAM élargie — référence + Meta Llama + modèles custom
+
+Si vous utilisez un **deuxième agent Bedrock** (Llama fondation ou **Llama fine-tuné** / importé), l’action `bedrock:InvokeModel` doit cibler les **ARN** réels visibles dans la console Bedrock (fondation, profil d’inférence, modèle personnalisé). Exemple **à resserrer en production** :
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:inference-profile/*",
+      "arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:provisioned-model/*",
+      "arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:custom-model/*"
+    ]
+  }]
+}
+```
+
+Remplacez les placeholders par votre compte et région. Les préfixes exacts (`inference-profile`, `custom-model`, etc.) dépendent du type de déploiement Bedrock — **copiez les ARN** depuis la console après le fine-tuning ou l’import.
+
+---
+
+## 6A. Fine-tuner un Meta Llama sur Amazon Bedrock (texte → SQL)
+
+Objectif : produire un **modèle personnalisé** invoqué comme le modèle de base, mais spécialisé sur vos paires (question + schéma `products` → SQL DuckDB).
+
+Le répertoire `finetuning/` automatise l'intégralité du pipeline.
+
+### A.1 Données d'entraînement
+
+```bash
+python3 -m finetuning.generate_dataset
+# → finetuning/data/train.jsonl  (~120 exemples)
+# → finetuning/data/eval.jsonl   (~20 exemples)
+```
+
+Le script génère des paires supervisées au format **Converse** (messages `system` / `user` / `assistant`). Le prompt système inclut le schéma complet de la table `products`, les règles de génération SQL et le rôle d'assistant. Le `user` contient la question en langage naturel, l'`assistant` la requête SQL seule.
+
+Références AWS : [Prepare data for fine-tuning](https://docs.aws.amazon.com/bedrock/latest/userguide/model-customization-prepare.html), [Customize a model with fine-tuning](https://docs.aws.amazon.com/bedrock/latest/userguide/custom-model-fine-tuning.html).
+
+### A.2 Lancer la personnalisation
+
+```bash
+python3 -m finetuning.launch_finetune \
+  --bucket ${DATA_BUCKET} \
+  --role-arn arn:aws:iam::${AWS_ACCOUNT_ID}:role/BedrockFineTuneRole \
+  --region us-east-1
+```
+
+Le script :
+1. Upload `train.jsonl` et `eval.jsonl` vers `s3://${DATA_BUCKET}/bedrock-finetune/`.
+2. Appelle `CreateModelCustomizationJob` avec le modèle de base **Meta Llama 3.1 8B Instruct** (`meta.llama3-1-8b-instruct-v1:0`).
+3. Affiche le `jobArn` — suivez la progression via la console **Bedrock → Custom models** ou `GetModelCustomizationJob`.
+
+> **Région** : Le fine-tuning Llama est souvent disponible uniquement dans `us-east-1` ou `us-west-2` — vérifiez la console Bedrock.
+
+### A.3 Évaluer le modèle fine-tuné en le comparant avec un modèle de référence
+
+```bash
+python3 -m finetuning.evaluate \
+  --finetuned-model-id <custom-model-arn-ou-inference-profile> \
+  --reference-model-id amazon.nova-micro-v1:0 \
+  --region us-east-1
+```
+
+Le script :
+- Exécute chaque question de `eval.jsonl` sur les deux modèles ;
+- Valide le SQL généré via DuckDB (exécution réelle) ;
+- Compare : **taux de réussite SQL**, **exact match**, **latence moyenne** ;
+- Affiche un rapport console structuré.
+
+
+### A.4 Brancher Kōjin sur le Llama fine-tuné
+
+Dans le conteneur ECS (ou en local) :
+
+- **`BEDROCK_MODEL_ID`** — gardez un modèle **référence** peu coûteux pour la prod simple (ex. `amazon.nova-micro-v1:0`) ou un Llama instruct non fine-tuné si vous ne comparez pas.
+- **`BEDROCK_COMPARE_MODEL_ID`** — collez l’ID / ARN / identifiant d’inférence **retourné par Bedrock** pour votre **Llama fine-tuné** (même région `AWS_REGION` que l’accès IAM).
+
+Dans l’UI **Exploration des ingrédients**, cochez **Comparer les deux agents** : colonne gauche = référence, colonne droite = Llama custom. **Priorité** : si `BEDROCK_COMPARE_MODEL_ID` est défini, le second agent est Bedrock ; sinon le second agent utilise `OPENAI_COMPAT_*` (Ollama, vLLM, etc.).
+
+---
+
+## 6B. Monitoring : écart de performance entre les deux agents
+
+### B.1 Dans l’interface Streamlit
+
+La page **Exploration** affiche pour chaque requête (mode comparaison) :
+
+- **Temps de génération SQL** (ms) par agent ;
+- **Temps d’exécution DuckDB** (ms) ;
+- **Égalité textuelle** des deux SQL (indicateur rapide, pas une preuve sémantique) ;
+- Un **historique de session** (tableau des dernières exécutions).
+
+### B.2 Journal NDJSON (ECS / analyse offline)
+
+Activez les variables suivantes sur la **task definition** (ou en local) :
+
+| Variable | Exemple | Rôle |
+|--------|---------|------|
+| `KOJIN_EXPLORATION_LOG_JSONL` | `1` | Si truthy, chaque clic « Interroger » append une ligne JSON. |
+| `KOJIN_EXPLORATION_LOG_PATH` | `/tmp/kojin_exploration_metrics.ndjson` | Fichier NDJSON (défaut : `/tmp/...`). |
+
+Chaque ligne contient notamment : `mode` (`single` / `compare`), `llm_provider_ref` (`groq` / `bedrock`), `model_ref`, `model_compare`, latences SQL et DuckDB, `duckdb_ok_*`, `rows_*`, `sql_text_equal`. Vous pouvez :
+
+- **Copier** le fichier vers S3 via un sidecar ou un cron ;
+- **Parser** dans QuickSight / Athena / notebook ;
+- **Émettre des métriques** CloudWatch avec un Lambda ou le **CloudWatch agent** sur un pattern de log.
+
+### B.3 CloudWatch et coûts
+
+- **Logs** : le group `/ecs/${APP_NAME}` contient déjà stdout/stderr Streamlit — si vous `print` les événements (optionnel), filtrez par préfixe.
+- **Bedrock** : [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/) — comparer coût par token **référence** vs **Llama custom** dans **Cost Explorer** en filtrant par modèle / tag (si vous taguez les workloads).
+
+---
+
+## 6C. Variables d’environnement LLM (récapitulatif conteneur)
+
+| Variable | Obligatoire | Description |
+|----------|-------------|-------------|
+| `AWS_REGION` | oui | Région Bedrock si la **référence** utilise Bedrock (alignée model access IAM). |
+| `DATA_S3_URI` | prod | URI S3 du CSV produits. |
+| `LLM_PROVIDER` | non | `auto` \| `groq` \| `bedrock`. Défaut `auto` : Groq si `GROQ_API_KEY`, sinon Bedrock. En pile **ECS pure AWS**, fixer **`bedrock`** si vous ne voulez jamais tenter Groq. |
+| `GROQ_API_KEY` | si Groq | Clé depuis **Groq Console** ; en ECS préférez **Secrets Manager** injecté comme env (ne pas committer dans l’image). |
+| `GROQ_MODEL_ID` | non | Modèle Groq (`llama-3.1-8b-instant`, etc.). Requiert egress HTTPS vers `api.groq.com`. |
+| `BEDROCK_MODEL_ID` | oui si réf. Bedrock | Modèle **référence** Exploration (ex. Nova Micro). Ignoré si la référence est Groq. |
+| `BEDROCK_COMPARE_MODEL_ID` | non | Second modèle Bedrock (ex. Llama fine-tuné) pour la comparaison. |
+| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_MODEL` | non | Alternative au second Bedrock (serveur OpenAI-compatible). |
+| `KOJIN_EXPLORATION_LOG_JSONL` | non | `1` pour activer le fichier NDJSON. |
+| `KOJIN_EXPLORATION_LOG_PATH` | non | Chemin du fichier de métriques. |
+
 ## 7. Cluster ECS, Task Definition, Service
 
 ### 7.1 Cluster + log group
@@ -301,7 +437,11 @@ aws logs create-log-group \
         { "name": "STREAMLIT_SERVER_HEADLESS", "value": "true" },
         { "name": "AWS_REGION", "value": "REGION" },
         { "name": "DATA_S3_URI", "value": "s3://DATA_BUCKET/DATA_KEY" },
-        { "name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0" }
+        { "name": "LLM_PROVIDER", "value": "bedrock" },
+        { "name": "BEDROCK_MODEL_ID", "value": "amazon.nova-micro-v1:0" },
+        { "name": "BEDROCK_COMPARE_MODEL_ID", "value": "" },
+        { "name": "KOJIN_EXPLORATION_LOG_JSONL", "value": "0" },
+        { "name": "KOJIN_EXPLORATION_LOG_PATH", "value": "/tmp/kojin_exploration_metrics.ndjson" }
       ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -fsS http://localhost:8501/_stcore/health || exit 1"],
@@ -492,8 +632,10 @@ Aucune reconstruction d'image n'est nécessaire. Le versioning S3 permet un reto
 ## 10. Observabilité
 
 - **Logs** : CloudWatch Logs `/ecs/kojin`, stream `web/*`.
+- **Exploration (deux agents)** : activer `KOJIN_EXPLORATION_LOG_JSONL=1` et un `KOJIN_EXPLORATION_LOG_PATH` persistent ou shipper vers S3 (voir §6B). Chaque requête enrichit un NDJSON exploitable pour comparer latences et succès DuckDB.
 - **Métriques ECS** : `CPUUtilization`, `MemoryUtilization` (namespace `AWS/ECS`).
 - **Métriques ALB** : `TargetResponseTime`, `HTTPCode_Target_5XX_Count`, `UnHealthyHostCount`.
+- **Coûts LLM** : filtrer **Bedrock** dans Cost Explorer par modèle / région pour comparer **référence** vs **Llama fine-tuné** (`BEDROCK_COMPARE_MODEL_ID`).
 - **Alarmes recommandées** :
   - CPU > 80 % pendant 10 min
   - Mémoire > 85 % pendant 5 min
@@ -540,8 +682,9 @@ aws s3api delete-bucket --bucket ${DATA_BUCKET}
 - [ ] Bucket S3 créé, versioning activé, accès public bloqué.
 - [ ] CSV généré et uploadé dans le bucket.
 - [ ] Image buildée (sans CSV), taggée `sha-*` et pushée sur ECR.
-- [ ] Rôle d'exécution et rôle de tâche (S3 read) créés.
-- [ ] Task definition enregistrée avec `DATA_S3_URI` et CPU/mémoire adaptés.
+- [ ] Rôle de tâche : S3 read **et** `bedrock:InvokeModel` sur les ARN référence + comparaison (§6.4).
+- [ ] Bedrock : **Model access** pour `BEDROCK_MODEL_ID` et pour `BEDROCK_COMPARE_MODEL_ID` si Llama custom.
+- [ ] Task definition : `DATA_S3_URI`, `BEDROCK_MODEL_ID`, fac. `BEDROCK_COMPARE_MODEL_ID`, fac. logs `KOJIN_EXPLORATION_*`.
 - [ ] ALB avec target group `/_stcore/health`, stickiness activée.
 - [ ] Security groups restreints (8501 uniquement depuis l'ALB).
 - [ ] Listener HTTPS avec certificat ACM, redirection 80 → 443.
