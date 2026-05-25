@@ -688,16 +688,18 @@ def run_data_prep():
 
 # ─── LLM — Bedrock OU Groq (LangChain), agnostic AWS vs local ────────────────
 #
-# Exploration : référence = ``reference_llm_provider()`` → Bedrock (**IAM**) ou Groq (**API key**).
-# Définir explicitement ``LLM_PROVIDER`` en prod ECS : ``bedrock`` (défaut AWS sans Groq)
-# ou ``groq``. Mode ``auto`` : Groq si ``GROQ_API_KEY`` (env ou ``st.secrets``), sinon Bedrock.
+# Exploration : référence = ``reference_llm_provider()`` → Bedrock (**IAM**), Groq ou OpenAI.
+# Définir explicitement ``LLM_PROVIDER`` en prod ECS : ``bedrock``, ``groq`` ou ``openai``.
+# Mode ``auto`` : OpenAI si ``OPENAI_API_KEY``, sinon Groq si ``GROQ_API_KEY``, sinon Bedrock.
 
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.amazon.nova-pro-v1:0").strip()
 # Agent secondaire (compare) — Bedrock uniquement ou ``OPENAI_COMPAT_*``.
 BEDROCK_COMPARE_MODEL_ID = os.environ.get("BEDROCK_COMPARE_MODEL_ID", "").strip()
 
 GROQ_OPENAI_BASE = "https://api.groq.com/openai/v1"
 GROQ_MODEL_ID = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant").strip()
+
+OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "gpt-4o").strip()
 
 
 def _secret_or_env(name: str) -> str | None:
@@ -712,14 +714,17 @@ def _secret_or_env(name: str) -> str | None:
 
 
 def reference_llm_provider() -> str:
-    """``groq`` | ``bedrock`` — résolu au moment de l'appel (pas mis en cache ici)."""
+    """``openai`` | ``groq`` | ``bedrock`` — résolu au moment de l'appel."""
     mode = (os.environ.get("LLM_PROVIDER") or "auto").strip().lower()
+    if mode == "openai":
+        return "openai"
     if mode == "groq":
         return "groq"
     if mode == "bedrock":
         return "bedrock"
-    if mode != "auto" and mode != "":
-        pass  # valeur inconnue → traiter comme auto
+    # auto
+    if _secret_or_env("OPENAI_API_KEY"):
+        return "openai"
     if _secret_or_env("GROQ_API_KEY"):
         return "groq"
     return "bedrock"
@@ -727,13 +732,19 @@ def reference_llm_provider() -> str:
 
 def reference_llm_label() -> str:
     """Libellé court pour titres Exploration / logs."""
-    if reference_llm_provider() == "groq":
+    p = reference_llm_provider()
+    if p == "openai":
+        return f"OpenAI — {OPENAI_MODEL_ID}"
+    if p == "groq":
         return f"Groq — {GROQ_MODEL_ID}"
     return str(BEDROCK_MODEL_ID)
 
 
 def reference_model_id_for_metrics() -> str:
-    if reference_llm_provider() == "groq":
+    p = reference_llm_provider()
+    if p == "openai":
+        return OPENAI_MODEL_ID
+    if p == "groq":
         return GROQ_MODEL_ID
     return BEDROCK_MODEL_ID
 
@@ -752,6 +763,24 @@ def _build_bedrock_chat(model_id: str, temperature: float, max_tokens: int):
     return ChatBedrockConverse(
         model_id=model_id,
         region_name=_bedrock_region(),
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def _build_openai_chat(temperature: float, max_tokens: int):
+    from langchain_openai import ChatOpenAI
+
+    key = _secret_or_env("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "OpenAI sélectionné (LLM_PROVIDER=openai ou auto avec clé attendue) mais "
+            "`OPENAI_API_KEY` est absent — définit la variable d'environnement ou "
+            "ajoute `OPENAI_API_KEY` dans `.streamlit/secrets.toml`."
+        )
+    return ChatOpenAI(
+        model=OPENAI_MODEL_ID,
+        api_key=key,
         temperature=temperature,
         max_tokens=max_tokens,
     )
@@ -777,6 +806,11 @@ def _build_groq_chat(temperature: float, max_tokens: int):
 
 
 @st.cache_resource(show_spinner=False)
+def _cached_ref_llm_openai(temperature: float, max_tokens: int):
+    return _build_openai_chat(temperature, max_tokens)
+
+
+@st.cache_resource(show_spinner=False)
 def _cached_ref_llm_groq(temperature: float, max_tokens: int):
     return _build_groq_chat(temperature, max_tokens)
 
@@ -787,8 +821,11 @@ def _cached_ref_llm_bedrock(model_id: str, temperature: float, max_tokens: int):
 
 
 def get_chat_llm(temperature: float = 0.1, max_tokens: int = 800):
-    """Référence Exploration : Groq ou Bedrock selon ``LLM_PROVIDER`` / ``GROQ_API_KEY``."""
-    if reference_llm_provider() == "groq":
+    """Référence Exploration : OpenAI, Groq ou Bedrock selon ``LLM_PROVIDER`` / clés présentes."""
+    p = reference_llm_provider()
+    if p == "openai":
+        return _cached_ref_llm_openai(temperature, max_tokens)
+    if p == "groq":
         return _cached_ref_llm_groq(temperature, max_tokens)
     return _cached_ref_llm_bedrock(BEDROCK_MODEL_ID, temperature, max_tokens)
 

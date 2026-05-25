@@ -102,15 +102,29 @@ def main():
 
     db_path = _ensure_duckdb()
 
-    # Load eval samples
+    # Load eval samples — supports both old format (messages[]+system role)
+    # and new bedrock-conversation-2023 format (schemaVersion + system top-level)
     samples = []
     with open(eval_path, "r", encoding="utf-8") as f:
         for line in f:
             record = json.loads(line)
-            msgs = record["messages"]
-            system_prompt = next((m["content"] for m in msgs if m["role"] == "system"), "")
-            question = next((m["content"] for m in msgs if m["role"] == "user"), "")
-            expected_sql = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
+            if record.get("schemaVersion") == "bedrock-conversation-2023":
+                # New format: system is top-level list, messages only user/assistant
+                system_blocks = record.get("system", [])
+                system_prompt = system_blocks[0]["text"] if system_blocks else ""
+                msgs = record.get("messages", [])
+                user_msg = next((m for m in msgs if m["role"] == "user"), {})
+                asst_msg = next((m for m in msgs if m["role"] == "assistant"), {})
+                content_u = user_msg.get("content", [])
+                content_a = asst_msg.get("content", [])
+                question = content_u[0]["text"] if content_u else ""
+                expected_sql = content_a[0]["text"] if content_a else ""
+            else:
+                # Legacy format: system/user/assistant all in messages[]
+                msgs = record.get("messages", [])
+                system_prompt = next((m["content"] for m in msgs if m["role"] == "system"), "")
+                question = next((m["content"] for m in msgs if m["role"] == "user"), "")
+                expected_sql = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
             samples.append({
                 "question": question,
                 "expected_sql": expected_sql,

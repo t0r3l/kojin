@@ -42,11 +42,12 @@ def main():
     parser.add_argument("--s3-bucket", required=True, help="S3 bucket for training data")
     parser.add_argument("--s3-prefix", default="bedrock-finetune/kojin-nl2sql", help="S3 key prefix")
     parser.add_argument("--role-arn", required=True, help="IAM role ARN for Bedrock customization")
-    parser.add_argument("--base-model", default="meta.llama3-1-8b-instruct-v1:0",
+    parser.add_argument("--base-model", default="amazon.nova-micro-v1:0:128k",
                         help="Base model ID (must be fine-tuning eligible in your region)")
-    parser.add_argument("--region", default="us-east-1", help="AWS region (check Llama fine-tune availability)")
+    parser.add_argument("--region", default="us-east-1", help="AWS region for fine-tuning")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Training batch size (Nova Micro accepts 1 only)")
     parser.add_argument("--learning-rate", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--job-name", default=None, help="Custom job name (auto-generated if omitted)")
     parser.add_argument("--data-dir", default="./finetuning/data", help="Local dir with train.jsonl/eval.jsonl")

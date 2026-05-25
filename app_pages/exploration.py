@@ -15,6 +15,7 @@ import duckdb
 import streamlit as st
 
 from kojin_common import (
+    BEDROCK_MODEL_ID,
     CSV_PATH,
     DUCKDB_PATH,
     DUCKDB_TABLE,
@@ -38,6 +39,14 @@ st.markdown(
     '<p class="subtitle" style="font-style:italic;color:#AD9E7B">Interrogez la base en langage naturel</p>',
     unsafe_allow_html=True,
 )
+
+if reference_llm_provider() == "bedrock" and not BEDROCK_MODEL_ID:
+    st.info(
+        "🔧 **Aucun modèle LLM configuré.**\n\n"
+        "La page Exploration nécessite un modèle Bedrock (Llama fine-tuné). "
+        "Définissez `BEDROCK_MODEL_ID` dans la task definition une fois le fine-tuning terminé."
+    )
+    st.stop()
 
 if not os.path.exists(CSV_PATH):
     st.warning(

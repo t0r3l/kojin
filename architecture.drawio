@@ -1,0 +1,112 @@
+<mxfile host="app.diagrams.net" modified="2026-05-01T22:00:00.000Z" agent="draw.io" version="24.0.0" type="device">
+  <diagram id="kojin-deployment" name="Deployment Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Utilisateur -->
+        <mxCell id="user" value="Utilisateur" style="shape=actor;whiteSpace=wrap;html=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="80" y="200" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ALB -->
+        <mxCell id="alb" value="Application&#xa;Load Balancer" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elb;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=12;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="195" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- ECS Fargate (groupe) -->
+        <mxCell id="ecs-group" value="ECS Fargate" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_ecs_service;grStroke=1;strokeColor=#3F8624;fillColor=#E9F7EF;verticalAlign=top;align=center;spacingTop=5;container=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="120" width="380" height="280" as="geometry" />
+        </mxCell>
+
+        <!-- Container Streamlit -->
+        <mxCell id="container" value="Container Streamlit (Kōjin)&#xa;&#xa;• streamlit_app.py (st.navigation)&#xa;• app_pages/bento_maker.py&#xa;• app_pages/exploration.py&#xa;   (LangChain → Bedrock / DuckDB)&#xa;• CSV téléchargé depuis S3 au boot" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;spacingLeft=10;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=middle;" vertex="1" parent="ecs-group">
+          <mxGeometry x="30" y="50" width="320" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- S3 Bucket -->
+        <mxCell id="s3" value="S3 Bucket&#xa;products_*.csv" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=12;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="530" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- Amazon Bedrock -->
+        <mxCell id="bedrock" value="Amazon Bedrock&#xa;(Nova Pro)" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=12;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="530" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- CloudWatch Logs -->
+        <mxCell id="cloudwatch" value="CloudWatch&#xa;Logs" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=11;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="195" width="70" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ECR -->
+        <mxCell id="ecr" value="ECR&#xa;(Image Docker)" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecr;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=11;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="310" width="70" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- IAM -->
+        <mxCell id="iam" value="IAM&#xa;(Rôles Task +&#xa;Execution)" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iam;labelBackgroundColor=none;sketch=0;fontStyle=1;fontSize=11;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="430" width="70" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Flèches -->
+        <!-- User → ALB -->
+        <mxCell id="edge-user-alb" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;fontSize=11;" edge="1" source="user" target="alb" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-user-alb-label" value="HTTPS" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=1;" vertex="1" connectable="0" parent="edge-user-alb">
+          <mxGeometry x="-0.2" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ALB → ECS Container -->
+        <mxCell id="edge-alb-ecs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;fontSize=11;" edge="1" source="alb" target="container" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-alb-ecs-label" value="HTTP/WS :8501" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=10;" vertex="1" connectable="0" parent="edge-alb-ecs">
+          <mxGeometry x="-0.2" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ECS → S3 -->
+        <mxCell id="edge-ecs-s3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;dashed=1;fontSize=11;" edge="1" source="container" target="s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-ecs-s3-label" value="s3:GetObject" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=10;fontStyle=2;" vertex="1" connectable="0" parent="edge-ecs-s3">
+          <mxGeometry x="-0.2" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ECS → Bedrock -->
+        <mxCell id="edge-ecs-bedrock" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;dashed=1;fontSize=11;" edge="1" source="container" target="bedrock" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-ecs-bedrock-label" value="bedrock:InvokeModel" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=10;fontStyle=2;" vertex="1" connectable="0" parent="edge-ecs-bedrock">
+          <mxGeometry x="-0.2" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ECS → CloudWatch -->
+        <mxCell id="edge-ecs-cw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;dashed=1;strokeColor=#999999;" edge="1" source="ecs-group" target="cloudwatch" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ECS → ECR -->
+        <mxCell id="edge-ecs-ecr" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;dashed=1;strokeColor=#999999;" edge="1" source="ecs-group" target="ecr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ECS → IAM -->
+        <mxCell id="edge-ecs-iam" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;dashed=1;strokeColor=#999999;" edge="1" source="ecs-group" target="iam" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

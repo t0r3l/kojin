@@ -529,13 +529,20 @@ def _generate_eval_pairs() -> list[dict]:
 
 
 def _to_bedrock_converse(question: str, sql: str) -> dict:
-    """Format a single example for Bedrock fine-tuning (Converse/messages format)."""
+    """Format a single example for Bedrock Nova fine-tuning.
+
+    Nova Micro fine-tuning requires ``schemaVersion: bedrock-conversation-2023``
+    with ``system`` as a top-level list and only ``user``/``assistant`` in
+    ``messages`` (the system role must NOT appear inside ``messages``).
+    Reference: https://docs.aws.amazon.com/bedrock/latest/userguide/model-customization-prepare.html
+    """
     return {
+        "schemaVersion": "bedrock-conversation-2023",
+        "system": [{"text": SYSTEM_PROMPT}],
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": sql},
-        ]
+            {"role": "user", "content": [{"text": question}]},
+            {"role": "assistant", "content": [{"text": sql}]},
+        ],
     }
 
 
