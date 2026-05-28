@@ -24,6 +24,10 @@ st.set_page_config(
 
 apply_theme()
 
+profile = st.Page(
+    "app_pages/profile.py",
+    title="Profil",
+)
 bento_maker = st.Page(
     "app_pages/bento_maker.py",
     title="Bento Planner",
@@ -33,6 +37,10 @@ exploration = st.Page(
     "app_pages/exploration.py",
     title="Exploration des ingrédients",
 )
+rl_planner = st.Page(
+    "app_pages/rl_planner.py",
+    title="RL Planner",
+)
 
-navigation = st.navigation([bento_maker, exploration])
+navigation = st.navigation([profile, bento_maker, exploration, rl_planner])
 navigation.run()

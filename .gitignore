@@ -69,3 +69,14 @@ bedrock-invoke-policy.json
 
 # Fine-tuning generated data
 finetuning/data/
+
+# Documentation heavy files
+documentation/*.pdf
+documentation/*.duckload
+documentation/*:Zone.Identifier
+
+# Secrets
+.env
+.env.local
+.claude_key
+secrets/

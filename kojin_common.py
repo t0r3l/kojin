@@ -564,6 +564,9 @@ def optimize_bento(
     meal_fraction: float,
     portion_legumes: float,
     allow_one_animal: bool = False,
+    ingredient_slot_ids: list[int] | None = None,
+    ingredient_proportions: list[float] | None = None,
+    proportion_weight: float = 0.25,
 ):
     if len(products_df) == 0:
         return None
@@ -600,6 +603,31 @@ def optimize_bento(
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     M = arr.T
     upper_bounds = products_df["portion_maximale"].to_numpy()
+
+    # Soft proportion constraints: guide the solver to respect the recipe's
+    # ingredient ratios while keeping macro targets as the primary objective.
+    # Each slot s contributes one extra row: sum(x[slot==s]) ≈ T_est * props[s].
+    # Scaled by proportion_weight so macro rows dominate.
+    if (
+        ingredient_slot_ids is not None
+        and ingredient_proportions is not None
+        and len(ingredient_slot_ids) == len(products_df)
+        and len(ingredient_proportions) > 0
+    ):
+        slot_ids_arr = np.array(ingredient_slot_ids, dtype=int)
+        props = np.array(ingredient_proportions, dtype=float)
+        prop_sum = props.sum()
+        if prop_sum > 1e-9:
+            props = props / prop_sum  # ensure they sum to 1
+            T_est = max((raw[0] * meal_fraction) / 3.5, 1.0)
+            extra_rows = []
+            extra_targets = []
+            for s in range(len(props)):
+                row = (slot_ids_arr == s).astype(float) * proportion_weight
+                extra_rows.append(row)
+                extra_targets.append(T_est * props[s] * proportion_weight)
+            M = np.vstack([M, np.array(extra_rows)])
+            targets = np.concatenate([targets, extra_targets])
 
     x, _masque, sel_indices = _run_solver(M, targets, upper_bounds)
 
@@ -701,6 +729,28 @@ GROQ_MODEL_ID = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant").strip()
 
 OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "gpt-4o").strip()
 
+ANTHROPIC_MODEL_ID = os.environ.get("ANTHROPIC_MODEL_ID", "claude-haiku-4-5-20251001").strip()
+
+
+def _load_claude_key_file() -> None:
+    """Load ANTHROPIC_API_KEY from .claude_key if not already set."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    for path in (".claude_key", os.path.expanduser("~/.claude_key")):
+        if os.path.exists(path):
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("CLAUDE_API_KEY="):
+                        os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1]
+                        return
+                    if line.startswith("ANTHROPIC_API_KEY="):
+                        os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1]
+                        return
+
+
+_load_claude_key_file()
+
 
 def _secret_or_env(name: str) -> str | None:
     raw = os.environ.get(name)
@@ -714,15 +764,19 @@ def _secret_or_env(name: str) -> str | None:
 
 
 def reference_llm_provider() -> str:
-    """``openai`` | ``groq`` | ``bedrock`` — résolu au moment de l'appel."""
+    """``anthropic`` | ``openai`` | ``groq`` | ``bedrock`` — résolu au moment de l'appel."""
     mode = (os.environ.get("LLM_PROVIDER") or "auto").strip().lower()
+    if mode == "anthropic":
+        return "anthropic"
     if mode == "openai":
         return "openai"
     if mode == "groq":
         return "groq"
     if mode == "bedrock":
         return "bedrock"
-    # auto
+    # auto: Anthropic > OpenAI > Groq > Bedrock
+    if _secret_or_env("ANTHROPIC_API_KEY"):
+        return "anthropic"
     if _secret_or_env("OPENAI_API_KEY"):
         return "openai"
     if _secret_or_env("GROQ_API_KEY"):
@@ -733,6 +787,8 @@ def reference_llm_provider() -> str:
 def reference_llm_label() -> str:
     """Libellé court pour titres Exploration / logs."""
     p = reference_llm_provider()
+    if p == "anthropic":
+        return f"Anthropic — {ANTHROPIC_MODEL_ID}"
     if p == "openai":
         return f"OpenAI — {OPENAI_MODEL_ID}"
     if p == "groq":
@@ -742,6 +798,8 @@ def reference_llm_label() -> str:
 
 def reference_model_id_for_metrics() -> str:
     p = reference_llm_provider()
+    if p == "anthropic":
+        return ANTHROPIC_MODEL_ID
     if p == "openai":
         return OPENAI_MODEL_ID
     if p == "groq":
@@ -786,6 +844,23 @@ def _build_openai_chat(temperature: float, max_tokens: int):
     )
 
 
+def _build_anthropic_chat(temperature: float, max_tokens: int):
+    from langchain_anthropic import ChatAnthropic
+
+    key = _secret_or_env("ANTHROPIC_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "Anthropic sélectionné mais `ANTHROPIC_API_KEY` est absent — "
+            "définit la variable d'environnement ou place la clé dans `.claude_key`."
+        )
+    return ChatAnthropic(
+        model=ANTHROPIC_MODEL_ID,
+        api_key=key,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
 def _build_groq_chat(temperature: float, max_tokens: int):
     from langchain_openai import ChatOpenAI
 
@@ -806,6 +881,11 @@ def _build_groq_chat(temperature: float, max_tokens: int):
 
 
 @st.cache_resource(show_spinner=False)
+def _cached_ref_llm_anthropic(temperature: float, max_tokens: int):
+    return _build_anthropic_chat(temperature, max_tokens)
+
+
+@st.cache_resource(show_spinner=False)
 def _cached_ref_llm_openai(temperature: float, max_tokens: int):
     return _build_openai_chat(temperature, max_tokens)
 
@@ -821,8 +901,10 @@ def _cached_ref_llm_bedrock(model_id: str, temperature: float, max_tokens: int):
 
 
 def get_chat_llm(temperature: float = 0.1, max_tokens: int = 800):
-    """Référence Exploration : OpenAI, Groq ou Bedrock selon ``LLM_PROVIDER`` / clés présentes."""
+    """Référence Exploration : Anthropic, OpenAI, Groq ou Bedrock selon ``LLM_PROVIDER`` / clés présentes."""
     p = reference_llm_provider()
+    if p == "anthropic":
+        return _cached_ref_llm_anthropic(temperature, max_tokens)
     if p == "openai":
         return _cached_ref_llm_openai(temperature, max_tokens)
     if p == "groq":
