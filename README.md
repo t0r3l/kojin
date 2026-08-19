@@ -140,7 +140,7 @@ export LLM_PROVIDER=groq
 aws sso login --profile mon-profil
 export AWS_PROFILE=mon-profil
 export AWS_REGION=eu-west-1
-# Activer `amazon.nova-micro-v1:0` dans Bedrock → Model access
+# Activer `amazon.nova-pro-v1:0` dans Bedrock → Model access
 ```
 
 **Option D — OpenAI / serveur compatible (Ollama, etc.)**
@@ -234,7 +234,7 @@ L'application s'ouvre sur [http://localhost:8501](http://localhost:8501).
 | `GROQ_MODEL_ID` | `llama-3.1-8b-instant` | Modèle Groq |
 | `OPENAI_API_KEY` | — | Clé OpenAI |
 | `OPENAI_MODEL_ID` | `gpt-4o` | Modèle OpenAI |
-| `BEDROCK_MODEL_ID` | `amazon.nova-micro-v1:0` | Modèle Bedrock référence |
+| `BEDROCK_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Modèle Bedrock référence |
 | `BEDROCK_COMPARE_MODEL_ID` | — | Second modèle Bedrock pour la comparaison (optionnel) |
 | `AWS_REGION` | `eu-west-1` | Région Bedrock |
 | `OPENAI_COMPAT_BASE_URL` | — | URL base serveur OpenAI-compatible (ex. Ollama) |
@@ -424,6 +424,7 @@ kojin/
 │   ├── db.py                   # Couche SQLite — users, meal_slots, user_rl
 │   ├── profiles.py             # Ancien JSON (conservé, migration auto vers SQLite)
 │   ├── policy.py               # ActorCritic PPO résiduel
+│   ├── ppo.py                  # Entraîneur PPO-clip (§3.4, Eqs. 16–17)
 │   ├── state.py                # FusedState (§3.3)
 │   ├── ncf.py                  # Neural Collaborative Filtering (§3.2)
 │   ├── env.py                  # RecipeEnv (environnement RL)
